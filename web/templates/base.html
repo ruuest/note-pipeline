@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Note Pipeline{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+  <!-- Nav -->
+  <nav class="bg-gray-800 border-b border-gray-700">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-6">
+      <a href="/" class="text-lg font-bold text-emerald-400">Note Pipeline</a>
+      <a href="/" class="text-sm text-gray-300 hover:text-white">ダッシュボード</a>
+      <a href="/history" class="text-sm text-gray-300 hover:text-white">投稿履歴</a>
+      <a href="/drafts" class="text-sm text-gray-300 hover:text-white">下書き</a>
+      <a href="/keywords" class="text-sm text-gray-300 hover:text-white">キーワード</a>
+      <a href="/settings" class="text-sm text-gray-300 hover:text-white">設定</a>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="max-w-6xl mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Footer -->
+  <footer class="text-center text-gray-600 text-xs py-4">
+    Note Pipeline Dashboard &mdash; NV CLOUD
+  </footer>
+</body>
+</html>

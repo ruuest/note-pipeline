@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}ダッシュボード - Note Pipeline{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">ダッシュボード</h1>
+
+<!-- KPI Cards -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <!-- 今日の投稿数 -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <p class="text-gray-400 text-sm">今日の投稿</p>
+    <p class="text-3xl font-bold text-emerald-400 mt-1">{{ status.successful }}</p>
+    <p class="text-gray-500 text-xs mt-1">成功 / 失敗 {{ status.failed }}</p>
+  </div>
+  <!-- 残り枠 -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <p class="text-gray-400 text-sm">残り枠</p>
+    <p class="text-3xl font-bold text-yellow-400 mt-1">{{ status.remaining }}</p>
+    <p class="text-gray-500 text-xs mt-1">上限 {{ max_daily }} 本/日</p>
+  </div>
+  <!-- 下書きストック -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <p class="text-gray-400 text-sm">下書きストック</p>
+    <p class="text-3xl font-bold text-blue-400 mt-1">{{ draft_count }}</p>
+    <p class="text-gray-500 text-xs mt-1">投稿待ち</p>
+  </div>
+  <!-- キーワード残数 -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <p class="text-gray-400 text-sm">キーワード残数</p>
+    <p class="text-3xl font-bold text-purple-400 mt-1">{{ kw_stats.unused }}</p>
+    <p class="text-gray-500 text-xs mt-1">全 {{ kw_stats.total }} 件中</p>
+  </div>
+</div>
+
+<!-- Status & Actions -->
+<div class="grid md:grid-cols-2 gap-6">
+  <!-- 投稿状態 -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <h2 class="text-lg font-semibold mb-3">投稿状態</h2>
+    <table class="w-full text-sm">
+      <tr class="border-b border-gray-700">
+        <td class="py-2 text-gray-400">投稿可能</td>
+        <td class="py-2 text-right">
+          {% if status.can_post_now %}
+            <span class="text-emerald-400 font-semibold">OK</span>
+          {% else %}
+            <span class="text-red-400 font-semibold">待機中</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr class="border-b border-gray-700">
+        <td class="py-2 text-gray-400">次回投稿まで</td>
+        <td class="py-2 text-right">{{ status.minutes_until_next }} 分</td>
+      </tr>
+      <tr>
+        <td class="py-2 text-gray-400">日付</td>
+        <td class="py-2 text-right">{{ status.date }}</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- アクション -->
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <h2 class="text-lg font-semibold mb-3">アクション</h2>
+    <div class="space-y-3">
+      <form method="post" action="/generate">
+        <button type="submit"
+          class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+          {% if bg_status.generating %}disabled{% endif %}>
+          {% if bg_status.generating %}生成中...{% else %}記事を1本生成{% endif %}
+        </button>
+      </form>
+      <form method="post" action="/publish">
+        <button type="submit"
+          class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+          {% if bg_status.publishing or not status.can_post_now or draft_count == 0 %}disabled{% endif %}>
+          {% if bg_status.publishing %}投稿中...{% else %}下書きから1本投稿{% endif %}
+        </button>
+      </form>
+      {% if bg_status.last_error %}
+      <div class="bg-red-900/50 border border-red-700 rounded-lg p-3 text-sm text-red-300">
+        {{ bg_status.last_error }}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

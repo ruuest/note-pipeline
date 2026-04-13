@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}下書き一覧 - Note Pipeline{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-2xl font-bold">下書き一覧</h1>
+  <form method="post" action="/generate">
+    <button type="submit"
+      class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold py-2 px-4 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+      {% if bg_status.generating %}disabled{% endif %}>
+      {% if bg_status.generating %}生成中...{% else %}+ 記事を生成{% endif %}
+    </button>
+  </form>
+</div>
+
+{% if bg_status.last_error %}
+<div class="bg-red-900/50 border border-red-700 rounded-lg p-3 text-sm text-red-300 mb-4">
+  {{ bg_status.last_error }}
+</div>
+{% endif %}
+
+{% if drafts %}
+<div class="space-y-3">
+  {% for d in drafts %}
+  <div class="bg-gray-800 rounded-lg p-4 border border-gray-700 flex items-start justify-between gap-4">
+    <div class="min-w-0 flex-1">
+      <p class="font-semibold truncate">{{ d.title }}</p>
+      <div class="flex gap-3 mt-1.5 text-xs text-gray-400">
+        <span>{{ d.keyword }}</span>
+        {% if d.category %}
+        <span class="bg-gray-700 text-gray-300 px-2 py-0.5 rounded">{{ d.category }}</span>
+        {% endif %}
+        <span>{{ d.body_len }}文字</span>
+        <span>{{ d.generated_at }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="bg-gray-800 rounded-lg p-8 border border-gray-700 text-center text-gray-500">
+  下書きがありません
+</div>
+{% endif %}
+{% endblock %}

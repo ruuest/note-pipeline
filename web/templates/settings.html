@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}設定 - Note Pipeline{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">設定</h1>
+
+<div class="max-w-lg space-y-4">
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <h2 class="text-lg font-semibold mb-4">環境変数</h2>
+    <table class="w-full text-sm">
+      <tr class="border-b border-gray-700">
+        <td class="py-2.5 text-gray-400">GOOGLE_API_KEY</td>
+        <td class="py-2.5 text-right">
+          {% if google_key_status == '設定済み' %}
+            <span class="text-emerald-400 font-semibold">{{ google_key_status }}</span>
+          {% else %}
+            <span class="text-red-400 font-semibold">{{ google_key_status }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr class="border-b border-gray-700">
+        <td class="py-2.5 text-gray-400">MAX_DAILY_POSTS</td>
+        <td class="py-2.5 text-right font-mono">{{ max_daily_posts }}</td>
+      </tr>
+      <tr class="border-b border-gray-700">
+        <td class="py-2.5 text-gray-400">BASIC_AUTH_USER</td>
+        <td class="py-2.5 text-right font-mono">{{ basic_auth_user }}</td>
+      </tr>
+      <tr>
+        <td class="py-2.5 text-gray-400">BASIC_AUTH_PASS</td>
+        <td class="py-2.5 text-right font-mono text-gray-500">********</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="bg-gray-800 rounded-lg p-5 border border-gray-700">
+    <h2 class="text-lg font-semibold mb-4">システム情報</h2>
+    <table class="w-full text-sm">
+      <tr class="border-b border-gray-700">
+        <td class="py-2.5 text-gray-400">アプリ</td>
+        <td class="py-2.5 text-right">Note Pipeline Dashboard</td>
+      </tr>
+      <tr class="border-b border-gray-700">
+        <td class="py-2.5 text-gray-400">フレームワーク</td>
+        <td class="py-2.5 text-right">FastAPI + Jinja2</td>
+      </tr>
+      <tr>
+        <td class="py-2.5 text-gray-400">テンプレート</td>
+        <td class="py-2.5 text-right">Tailwind CSS (CDN)</td>
+      </tr>
+    </table>
+  </div>
+</div>
+{% endblock %}

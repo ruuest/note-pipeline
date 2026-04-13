@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}キーワード一覧 - Note Pipeline{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-2">キーワード一覧</h1>
+<p class="text-gray-400 text-sm mb-6">
+  全 {{ stats.total }} 件 / 使用済み {{ stats.used }} 件 / 未使用 {{ stats.unused }} 件
+</p>
+
+<div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+  <table class="w-full text-sm">
+    <thead>
+      <tr class="border-b border-gray-700 text-gray-400 text-left">
+        <th class="px-4 py-3">テーマ</th>
+        <th class="px-4 py-3">メインKW</th>
+        <th class="px-4 py-3">サブKW</th>
+        <th class="px-4 py-3">カテゴリ</th>
+        <th class="px-4 py-3">状態</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for kw in keywords %}
+      <tr class="border-b border-gray-700/50 hover:bg-gray-700/30 {% if kw.used.strip().lower() == 'true' %}opacity-50{% endif %}">
+        <td class="px-4 py-2.5">{{ kw.theme }}</td>
+        <td class="px-4 py-2.5 text-gray-300">{{ kw.main_keyword }}</td>
+        <td class="px-4 py-2.5 text-gray-400 text-xs">{{ kw.sub_keywords }}</td>
+        <td class="px-4 py-2.5">
+          <span class="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded">{{ kw.category }}</span>
+        </td>
+        <td class="px-4 py-2.5">
+          {% if kw.used.strip().lower() == 'true' %}
+            <span class="text-gray-500 text-xs">使用済み</span>
+          {% else %}
+            <span class="text-emerald-400 text-xs font-semibold">未使用</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

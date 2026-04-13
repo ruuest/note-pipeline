@@ -1,0 +1,9 @@
+[project]
+name = "note-pipeline"
+version = "0.1.0"
+description = "note.com auto-posting pipeline for NV CLOUD"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai>=1.0.0",
+    "playwright>=1.49.0",
+]
