@@ -4,12 +4,17 @@
 スコアリング(0-100)してベスト候補を選ぶ。
 """
 import json
+import os
 import re
 
-from google import genai
-from google.genai import types
+# Gemini優先、GOOGLE_API_KEY未設定時はAnthropicフォールバック
+_USE_GEMINI = bool(os.environ.get("GOOGLE_API_KEY"))
+if _USE_GEMINI:
+    from google import genai
+    from google.genai import types
 
-MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 TITLE_TYPES = [
     {
@@ -36,6 +41,11 @@ TITLE_TYPES = [
         "id": "comparison",
         "name": "比較型",
         "guide": "複数の選択肢・ビフォーアフターを対比する(例: AとBどっちが得?、従来法vs新手法)",
+    },
+    {
+        "id": "confession",
+        "name": "本音告白型",
+        "guide": "失敗談・本音・ぶっちゃけ系(例: ガチで○○だった話、正直○○は甘くない、○○して後悔した理由)",
     },
 ]
 
@@ -77,27 +87,26 @@ def generate_title_candidates(
         "各タイトルは32文字以内、数字や具体性を重視し、煽りすぎず実務者に刺さる表現にしてください。"
     )
 
-    user_prompt = f"""以下の記事について、5つの型でタイトル候補を1つずつ作成してください。
+    type_examples = ", ".join(f'"{t["id"]}"' for t in TITLE_TYPES)
+    user_prompt = f"""以下の記事について、{len(TITLE_TYPES)}つの型でタイトル候補を1つずつ作成してください。
 
 【テーマ】{theme}
 【メインキーワード】{main_keyword}
 【関連キーワード】{sub_keywords}
 【本文サマリ】{body_summary}
 
-【5つの型】
+【{len(TITLE_TYPES)}つの型】
 {types_desc}
 
 必ず以下のJSON配列のみを出力してください(前置き・説明文なし):
 [
-  {{"type": "benefit", "title": "..."}},
-  {{"type": "number", "title": "..."}},
-  {{"type": "question", "title": "..."}},
-  {{"type": "howto", "title": "..."}},
-  {{"type": "comparison", "title": "..."}}
-]"""
+  {{"type": "{TITLE_TYPES[0]['id']}", "title": "..."}},
+  ...各typeにつき1つ...
+]
+対象type: {type_examples}"""
 
     response = client.models.generate_content(
-        model=MODEL,
+        model=GEMINI_MODEL,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
@@ -153,7 +162,7 @@ def score_titles(
 ]"""
 
     response = client.models.generate_content(
-        model=MODEL,
+        model=GEMINI_MODEL,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,

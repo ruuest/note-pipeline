@@ -1,15 +1,26 @@
 import csv
 import json
+import logging
 import random
 import re
 from datetime import datetime
 from pathlib import Path
 
-from google import genai
-from google.genai import types
+import os
+
+# Gemini優先、GOOGLE_API_KEY未設定時はAnthropicフォールバック
+_USE_GEMINI = bool(os.environ.get("GOOGLE_API_KEY"))
+if _USE_GEMINI:
+    from google import genai
+    from google.genai import types
+else:
+    import anthropic
 
 from src.models import Article
 from src import title_optimizer
+from src.thumbnail import generate_thumbnail
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_DIR = BASE_DIR / "config"
@@ -163,9 +174,18 @@ def mark_keyword_used(theme: str):
         writer.writerows(rows)
 
 
+def _select_template(templates_data: dict) -> dict:
+    """重み付きランダムでテンプレートを選択。template_weightsが未設定なら均等。"""
+    templates = templates_data["templates"]
+    weights_map = templates_data.get("template_weights", {})
+    if weights_map:
+        weights = [weights_map.get(t["id"], 1) for t in templates]
+        return random.choices(templates, weights=weights, k=1)[0]
+    return random.choice(templates)
+
+
 def generate_article(keyword: dict, templates_data: dict) -> Article:
-    template = random.choice(templates_data["templates"])
-    client = genai.Client()
+    template = _select_template(templates_data)
 
     user_prompt = template["user_prompt"].format(
         theme=keyword["theme"],
@@ -173,16 +193,26 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
         sub_keywords=keyword["sub_keywords"],
     )
 
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=template["system_prompt"],
-            max_output_tokens=4096,
-        ),
-    )
-
-    raw_text = response.text
+    if _USE_GEMINI:
+        client = genai.Client()
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=template["system_prompt"],
+                max_output_tokens=4096,
+            ),
+        )
+        raw_text = response.text
+    else:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4096,
+            system=template["system_prompt"],
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw_text = response.content[0].text
 
     # タイトルと本文を分離（1行目をタイトルとする）
     lines = raw_text.strip().split("\n", 1)
@@ -191,7 +221,7 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
 
     # タイトル最適化（5型生成+スコアリング）
     title_opt_cfg = templates_data.get("title_optimization", {})
-    if title_opt_cfg.get("enabled", False):
+    if title_opt_cfg.get("enabled", False) and _USE_GEMINI:
         body_summary = body[:500]
         try:
             best, _scored = title_optimizer.optimize_title(
@@ -225,6 +255,21 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
     hashtags = build_hashtags(keyword, tags_config)
     body = body + format_hashtag_block(hashtags)
 
+    # サムネイル生成（失敗しても記事生成は続行）
+    image_path = None
+    try:
+        safe_kw = keyword["main_keyword"].replace(" ", "_")[:30]
+        draft_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_kw}"
+        image_path = generate_thumbnail(
+            title=title,
+            category=keyword["category"],
+            draft_id=draft_id,
+        )
+        print(f"  🖼 サムネイル: {image_path.name}")
+    except Exception as e:
+        logger.warning(f"サムネイル生成スキップ: {e}")
+        print(f"  ⚠ サムネイル生成スキップ: {e}")
+
     return Article(
         title=title,
         body=body,
@@ -232,6 +277,7 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
         theme=keyword["theme"],
         category=keyword["category"],
         template_id=template["id"],
+        image_path=image_path,
     )
 
 
