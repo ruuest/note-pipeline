@@ -45,15 +45,13 @@ def count_hashtags(body: str) -> int:
     return len(re.findall(r"(?:^|\s)#[^\s#]+", body))
 
 
-def cta_url_is_embeddable(body: str, url: str = "https://nv-cloud-lp.onrender.com") -> bool:
-    """note のリンクカード生成条件: URLが単独行・前後空行・絵文字や記号プレフィックスなし。"""
+def cta_url_is_embeddable(body: str, url: str = "https://kaitori-saas.onrender.com/lp") -> bool:
+    """note のリンクカード生成条件: URLが単独行・前後空行。"""
     if url not in body:
         return False
+    # URL が独立した行にあることを確認
     pattern = re.compile(r"(^|\n)\s*" + re.escape(url) + r"\s*(\n|$)")
     if not pattern.search(body):
-        return False
-    bad_prefix = re.compile(r"[👉➡→▶︎▼\-\*・>][ \t]*" + re.escape(url))
-    if bad_prefix.search(body):
         return False
     return True
 
