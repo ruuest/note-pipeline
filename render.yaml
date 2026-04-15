@@ -1,15 +1,26 @@
 services:
   - type: web
-    name: note-pipeline-dashboard
+    name: note-pipeline
     runtime: python
+    plan: free
+    region: singapore
+    branch: main
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: GOOGLE_API_KEY
-        sync: false
+      - key: PYTHON_VERSION
+        value: "3.12"
       - key: BASIC_AUTH_USER
         sync: false
       - key: BASIC_AUTH_PASS
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.12"
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: NOTE_EMAIL
+        sync: false
+      - key: NOTE_PASSWORD
+        sync: false
+      - key: LP_URL
+        sync: false
