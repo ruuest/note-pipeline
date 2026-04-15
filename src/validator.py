@@ -77,7 +77,7 @@ def validate_article(article: Article) -> ValidationResult:
     elif len(title) > 60:
         result.warnings.append(f"タイトルが長めです ({len(title)}文字 > 60)")
 
-    is_experience = (article.template_id or "") == "experience"
+    is_experience = (article.template_id or "") in ("experience", "confession")
     min_body = EXPERIENCE_MIN_BODY if is_experience else MIN_BODY_LENGTH
     max_body = EXPERIENCE_MAX_BODY if is_experience else MAX_BODY_LENGTH
     min_headings = EXPERIENCE_MIN_HEADINGS if is_experience else MIN_HEADINGS
