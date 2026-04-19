@@ -448,7 +448,7 @@ async def apply_fixes(
                 await page.wait_for_timeout(1500)
 
                 # LP URL を createLink でアンカー化（publisher.py 流用）
-                target_url = "https://nv-cloud-lp.onrender.com"
+                target_url = "https://nvcloud-lp.pages.dev/"
                 try:
                     await page.evaluate(
                         """(url) => {

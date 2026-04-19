@@ -124,7 +124,7 @@ class NotePublisher:
             # 本文中のCTA URLを <a> リンクに昇格させる（noteのリンクカード生成のヒント）。
             # JS走査で URL を含むテキストノードを見つけ、selection→execCommand('createLink')で
             # アンカー化する。失敗してもプレーンテキストで残るので安全。
-            target_url = "https://kaitori-saas.onrender.com/lp"
+            target_url = "https://nvcloud-lp.pages.dev/"
             try:
                 await page.evaluate(
                     """(url) => {

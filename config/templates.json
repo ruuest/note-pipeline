@@ -53,7 +53,7 @@
     "スキルアップ": "\n\n査定の経験値、頭の中だけに入っていませんか？チームで共有できる仕組みを作った話はこちら。\n\n{lp_url}\n\n",
     "default": "\n\n買取業務の管理、まだExcelですか？筆者が乗り換えたクラウドツールの話はこちら。\n\n{lp_url}\n\n"
   },
-  "lp_url": "https://kaitori-saas.onrender.com/lp",
+  "lp_url": "https://nvcloud-lp.pages.dev/",
   "seo_config": {
     "target_keywords": [
       "出張買取 管理",

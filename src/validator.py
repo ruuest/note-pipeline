@@ -45,7 +45,7 @@ def count_hashtags(body: str) -> int:
     return len(re.findall(r"(?:^|\s)#[^\s#]+", body))
 
 
-def cta_url_is_embeddable(body: str, url: str = "https://kaitori-saas.onrender.com/lp") -> bool:
+def cta_url_is_embeddable(body: str, url: str = "https://nvcloud-lp.pages.dev/") -> bool:
     """note のリンクカード生成条件: URLが単独行・前後空行。"""
     if url not in body:
         return False
