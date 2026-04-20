@@ -117,15 +117,39 @@ bash scripts/note_daily_summary.sh    # 日次集計
 ## X スレッド自動投稿（src/x_publisher.py）
 
 note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッドを生成し、
-tweepy 経由で X に連投する機能。
+**Playwright スクレイピング** で x.com に連投する機能。
 
-### 仕様（v1.0 / 2026-04-20）
+> **Phase 1 はスクレイピング方式（.x-session.json）、API 経路（tweepy）は将来のフォールバック**。
+> `.env` の `X_BEARER_TOKEN` / `X_API_KEY` 等は記載OK（現状は未使用）。
+
+### 仕様（v2.0 / 2026-04-20、方式: Playwright スクレイピング）
+- セッション: `.x-session.json`（`.note-session.json` と別管理）
+- フロー: session 復元 → x.com/home → Post ダイアログ → 本文入力 → "+" で枠追加 → "Post all"
+- セレクタは多段 fallback（`aria-label`/`data-testid`/`text`）
+- 失敗時は `logs/screenshots/x_*.png` に自動保存 + Telegram 通知
 - システムプロンプト: `docs/x_thread_prompt.md`（プロダクト大臣作成）
 - トーンガイド: `docs/x_tone_guide.md`
 - コンプラルール: `config/compliance_rules.yaml`（CR001-050、景表法/古物営業法/ステマ/X TOS/Meta TOS）
 - LP URL: `https://nvcloud-lp.pages.dev/`（他URL使用禁止）
 - 制約: 各ツイート135字以内、絵文字1ツイート2個まで、CTAは末尾1箇所のみ
 - 再生成: バリデーションNG時は最大3回再生成 → 全NGなら `queue/x_approval_queue.json` に積む
+- レート制限相当（UI制限検知）は 30 分 sleep リトライ
+
+### X セッション初期化（手動、最初の1回のみ）
+
+```bash
+./scripts/x_auth_init.sh
+```
+
+動作:
+1. Chromium が `headless=False` で起動
+2. `https://x.com/login` が開く
+3. ブラウザで X にログイン（2要素認証可）
+4. ログイン完了を自動検知（`/home` 遷移、最大 10 分）
+5. `.x-session.json` が保存される
+
+以降、cron 投稿はこのセッションを自動で復元。`/login` にリダイレクトされた場合は
+Telegram で通知が来るので再度このスクリプトを実行する。
 
 ### Article メタデータでの制御
 
@@ -140,15 +164,21 @@ tweepy 経由で X に連投する機能。
 ### 必要な環境変数
 
 ```env
+# 必須
+X_SHARE_ENABLED=true
+ANTHROPIC_API_KEY=sk-ant-...
+
+# optional（cron で headless 実行する場合のみ true に。UI変動リスクあり要検討）
+X_HEADLESS=false
+
+# 将来のフォールバック用（現状は未使用、記載OK）
 X_API_KEY=...
 X_API_SECRET=...
 X_ACCESS_TOKEN=...
 X_ACCESS_TOKEN_SECRET=...
-X_SHARE_ENABLED=true
-ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-`X_SHARE_ENABLED=false` または認証情報欠落時はスキップ（dry_run と同じ振る舞い）。
+`X_SHARE_ENABLED=false` または `.x-session.json` 未作成時はスキップ。
 
 ### dry_run（投稿せずプレビュー）
 
@@ -178,5 +208,6 @@ import json; print(json.dumps(result, ensure_ascii=False, indent=2))
 .venv/bin/python -m pytest tests/test_x_publisher.py -v
 ```
 
-ライブAPIは叩かない。バリデーション・JSON解析・キュー操作・dry_runをカバー（23件）。
-ライブ投稿テストは天皇による環境変数投入後に別途実施（次タスク予定）。
+ライブブラウザは起動しない。バリデーション・JSON解析・キュー操作・dry_run・
+Playwright 経路モック（session欠落/成功/失敗/disabled）・XSessionError をカバー（29件）。
+ライブ投稿テストは `scripts/x_auth_init.sh` で `.x-session.json` を作成した後に手動で実施。

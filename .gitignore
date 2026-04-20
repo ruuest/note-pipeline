@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .note-session.json
+.x-session.json
 logs/
 drafts/
 # Xスレッド予約キュー（実データ）

@@ -1,7 +1,18 @@
-"""X(Twitter) スレッド自動投稿。
+"""X(Twitter) スレッド自動投稿（Playwright スクレイピング方式）。
 
 note記事を Claude Sonnet 4.6 で 3〜7 ツイートのスレッドに分割し、
-tweepy 経由で X API v2 (OAuth1.0a User Context) で順次投稿する。
+Playwright で x.com にログインセッションを復元して順次投稿する。
+
+【設計方針 v2.0 (2026-04-20)】
+- API 経路（tweepy）は廃止。.x-session.json を使った Playwright スクレイピング。
+- note publisher (src/publisher.py) と同じパターン:
+  - storage_state で session 復元 → x.com/home
+  - 失敗時 logs/screenshots/ にスクショ保存
+  - 未ログイン/期限切れは XSessionError で Telegram 通知
+- スレッドは UI の "+" / "追加" ボタンで入力欄を増やして一気に "Post all"。
+- tweet_id は自分のプロフィール最新ツイートの URL 末尾から取得。
+- セレクタは aria-label / data-testid / text の多段 fallback。
+- .env の X_BEARER_TOKEN 等は optional（将来のフォールバック用に残置）。
 
 【プロダクト大臣の仕様 v1.0 (2026-04-20) 準拠】
 - システムプロンプト: docs/x_thread_prompt.md の §「システムプロンプト」を抽出
@@ -15,9 +26,9 @@ tweepy 経由で X API v2 (OAuth1.0a User Context) で順次投稿する。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import random
 import re
 import subprocess
 import time
@@ -30,13 +41,15 @@ from src.models import Article
 BASE_DIR = Path(__file__).resolve().parent.parent
 QUEUE_DIR = BASE_DIR / "queue"
 QUEUE_FILE = QUEUE_DIR / "x_posts.json"
-APPROVAL_QUEUE_FILE = QUEUE_DIR / "x_approval_queue.json"  # 3回再生成失敗の承認待ち
+APPROVAL_QUEUE_FILE = QUEUE_DIR / "x_approval_queue.json"
 PROMPT_PATH = BASE_DIR / "docs" / "x_thread_prompt.md"
 TONE_GUIDE_PATH = BASE_DIR / "docs" / "x_tone_guide.md"
 COMPLIANCE_RULES_PATH = BASE_DIR / "config" / "compliance_rules.yaml"
+SESSION_PATH = BASE_DIR / ".x-session.json"
+SCREENSHOTS_DIR = BASE_DIR / "logs" / "screenshots"
 TELEGRAM_NOTIFY = Path("/Users/apple/NorthValueAsset/cabinet/scripts/telegram_notify.sh")
 
-# X API v2 制約
+# X UI 制約（投稿本体の制限値は従来通り）
 TWEET_HARD_LIMIT = 280
 TWEET_SAFE_LIMIT = 135
 THREAD_MIN = 3
@@ -45,8 +58,14 @@ EMOJI_PER_TWEET_MAX = 2
 DEFAULT_CTA_URL = "https://nvcloud-lp.pages.dev/"
 ALLOWED_URL = "https://nvcloud-lp.pages.dev/"
 
+X_PROFILE_URL = "https://x.com/home"
+X_COMPOSE_URL = "https://x.com/compose/post"
+
 CLAUDE_MODEL = "claude-sonnet-4-6"
 MAX_REGEN = 3
+
+# レート制限相当（連続投稿検知）— UI 側の "制限" ダイアログ検知で使用
+RATE_LIMIT_WAIT_SEC = 30 * 60  # 30分 sleep でリトライ
 
 # CTA バリエーション
 CTA_VARIANTS = {
@@ -56,17 +75,28 @@ CTA_VARIANTS = {
 }
 
 
+class XSessionError(RuntimeError):
+    """X セッション関連の致命的エラー（再ログイン必須）。"""
+
+
 # ─────────────────────────────────────────────────────
 # 設定 / 認証
 # ─────────────────────────────────────────────────────
 @dataclass
 class XPublisherConfig:
-    api_key: str
-    api_secret: str
-    access_token: str
-    access_token_secret: str
+    """X 投稿設定。
+
+    API認証情報（api_key等）は optional — Phase 1 はスクレイピング方式なので未使用。
+    enabled=True かつ SESSION_PATH が存在すれば投稿可能。
+    anthropic_api_key はスレッド生成に必須。
+    """
+    api_key: str = ""
+    api_secret: str = ""
+    access_token: str = ""
+    access_token_secret: str = ""
     enabled: bool = False
     anthropic_api_key: str = ""
+    headless: bool = False  # cron 実行時は True を推奨（UI変動リスクあり、要検討）
 
     @classmethod
     def from_env(cls) -> "XPublisherConfig":
@@ -77,10 +107,12 @@ class XPublisherConfig:
             access_token_secret=os.environ.get("X_ACCESS_TOKEN_SECRET", ""),
             enabled=os.environ.get("X_SHARE_ENABLED", "false").lower() == "true",
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            headless=os.environ.get("X_HEADLESS", "false").lower() == "true",
         )
 
     def has_x_credentials(self) -> bool:
-        return all([self.api_key, self.api_secret, self.access_token, self.access_token_secret])
+        """スクレイピング方式では session ファイルの有無を返す。"""
+        return SESSION_PATH.exists()
 
     def is_ready(self) -> bool:
         return self.enabled and self.has_x_credentials()
@@ -92,17 +124,15 @@ class XPublisherConfig:
 def load_system_prompt() -> str:
     """docs/x_thread_prompt.md から ```` で囲まれたシステムプロンプトを抽出。"""
     if not PROMPT_PATH.exists():
-        # フォールバック: 最低限のプロンプト
         return (
             "あなたはNV CLOUDの公式X投稿スレッドを生成するコピーライターです。"
             "JSON配列のみで返却してください。"
         )
     text = PROMPT_PATH.read_text(encoding="utf-8")
-    # 4連バッククォートで囲まれたブロックを抽出（プロンプト本体）
     match = re.search(r"````\s*\n(.*?)\n````", text, re.DOTALL)
     if match:
         return match.group(1).strip()
-    return text  # フォールバック: 全体を返す
+    return text
 
 
 # ─────────────────────────────────────────────────────
@@ -208,28 +238,23 @@ def validate_thread(thread: list[dict]) -> ValidationResult:
         idx = t.get("index", i + 1)
         body_no_url = _strip_url(text)
 
-        # 本文文字数（URL除く）
         if len(body_no_url) > TWEET_SAFE_LIMIT:
             errors.append(
                 f"index={idx}: 本文 {len(body_no_url)}字、上限{TWEET_SAFE_LIMIT}字超過"
             )
-        # 全体文字数（URL含む）— X 上限
         if len(text) > TWEET_HARD_LIMIT:
             errors.append(
                 f"index={idx}: 全体 {len(text)}字、X上限{TWEET_HARD_LIMIT}字超過"
             )
-        # 絵文字
         emj = count_emoji(text)
         if emj > EMOJI_PER_TWEET_MAX:
             errors.append(f"index={idx}: 絵文字 {emj}個、上限{EMOJI_PER_TWEET_MAX}個超過")
-        # コンプライアンス
         e, w = _check_compliance(text, rules)
         for m in e:
             errors.append(f"index={idx}: {m}")
         for m in w:
             warnings.append(f"index={idx}: {m}")
 
-    # CTA: 末尾1本のみ has_link=true、URLは ALLOWED_URL のみ
     cta_indices = [i for i, t in enumerate(thread) if t.get("has_link")]
     if len(cta_indices) != 1:
         errors.append(f"CTAは末尾1箇所のみ。検出: {len(cta_indices)}箇所")
@@ -281,7 +306,6 @@ def _parse_thread_json(raw: str) -> list[dict]:
     parsed = json.loads(cleaned)
     if not isinstance(parsed, list):
         raise ValueError(f"JSON配列ではない: {type(parsed)}")
-    # char_count を text の長さで上書き（Claudeの計算ミスを補正）
     normalized = []
     for i, item in enumerate(parsed):
         if isinstance(item, str):
@@ -319,18 +343,6 @@ def generate_thread(
     model: str = CLAUDE_MODEL,
     max_regen: int = MAX_REGEN,
 ) -> dict:
-    """スレッド生成 + バリデーション + 最大3回再生成。
-
-    Returns:
-        {
-          "ok": bool,            # 全バリデーション通過
-          "thread": [...],       # 最終出力 (失敗時は最後の試行結果)
-          "attempts": int,       # 試行回数
-          "errors": [...],       # 最終試行のエラー
-          "warnings": [...],     # 最終試行の警告
-          "needs_approval": bool, # 3回NGで承認待ちが必要
-        }
-    """
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY が未設定")
@@ -360,7 +372,6 @@ def generate_thread(
                 "needs_approval": False,
             }
 
-    # 全試行NG → 承認待ちへ
     return {
         "ok": False,
         "thread": last_thread,
@@ -380,7 +391,6 @@ def article_to_input(
     cta_variant: str = "free_trial",
     hashtags: list[str] | None = None,
 ) -> dict:
-    """Article → generate_thread() 入力スキーマに変換。"""
     body = article.body or ""
     snippets = [s.strip() for s in body.split("\n") if s.strip()][:6]
     return {
@@ -395,7 +405,7 @@ def article_to_input(
 
 
 # ─────────────────────────────────────────────────────
-# X 投稿（tweepy）
+# 通知 / ファイル操作
 # ─────────────────────────────────────────────────────
 def _notify(text: str) -> None:
     try:
@@ -411,54 +421,6 @@ def _notify(text: str) -> None:
         pass
 
 
-def _build_client(config: XPublisherConfig):
-    import tweepy
-
-    return tweepy.Client(
-        consumer_key=config.api_key,
-        consumer_secret=config.api_secret,
-        access_token=config.access_token,
-        access_token_secret=config.access_token_secret,
-        wait_on_rate_limit=False,
-    )
-
-
-def _post_one_tweet(
-    client,
-    text: str,
-    in_reply_to_tweet_id: str | None = None,
-    *,
-    max_retries: int = 3,
-) -> str:
-    import tweepy
-
-    last_error = None
-    for attempt in range(max_retries):
-        try:
-            kwargs = {"text": text}
-            if in_reply_to_tweet_id:
-                kwargs["in_reply_to_tweet_id"] = in_reply_to_tweet_id
-            response = client.create_tweet(**kwargs)
-            return str(response.data["id"])
-        except tweepy.TooManyRequests as e:
-            last_error = e
-            wait = 15 * 60
-            _notify(f"⚠️ X API レート制限 429: {wait//60}分後リトライ")
-            time.sleep(wait)
-        except (tweepy.Unauthorized, tweepy.Forbidden) as e:
-            _notify(f"🔑 X API 認証エラー({type(e).__name__}): {e}\nキー再発行が必要")
-            raise
-        except tweepy.TweepyException as e:
-            last_error = e
-            backoff = 2 ** attempt + random.uniform(0, 1)
-            if attempt < max_retries - 1:
-                time.sleep(backoff)
-    raise RuntimeError(f"X API 投稿失敗（{max_retries}回リトライ後）: {last_error}")
-
-
-# ─────────────────────────────────────────────────────
-# 承認キュー
-# ─────────────────────────────────────────────────────
 def _ensure_file(path: Path) -> list[dict]:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -498,6 +460,322 @@ def push_to_approval_queue(article: Article, attempt_result: dict, note_url: str
 
 
 # ─────────────────────────────────────────────────────
+# Playwright XPublisher（スクレイピング方式）
+# ─────────────────────────────────────────────────────
+class XPublisher:
+    """Playwright で x.com に投稿する。
+
+    責務:
+      - .x-session.json から BrowserContext を復元
+      - ホームのポスト作成ダイアログ or /compose/post 経由で投稿
+      - スレッド: 本文入力 → "+" で次枠追加 → 全て入力後 "Post all"
+      - 失敗時は logs/screenshots/ にスクショ保存 + Telegram 通知
+      - レート制限ダイアログ検知で 30 分 sleep リトライ
+    """
+
+    def __init__(self, headless: bool = False):
+        self.headless = headless
+        self.playwright = None
+        self.browser = None
+
+    async def start(self):
+        from playwright.async_api import async_playwright
+
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+
+    async def stop(self):
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+
+    def _notify_session_issue(self, detail: str) -> None:
+        _notify(
+            "🔑 X セッション切れ、再ログインが必要\n"
+            f"原因: {detail}\n"
+            "対処: /Users/apple/NorthValueAsset/note-pipeline/scripts/x_auth_init.sh を実行"
+        )
+
+    async def _save_screenshot(self, page, tag: str) -> Path | None:
+        try:
+            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out = SCREENSHOTS_DIR / f"x_{tag}_{ts}.png"
+            await page.screenshot(path=str(out))
+            return out
+        except Exception:
+            return None
+
+    async def _get_context(self):
+        """保存済みセッションから BrowserContext を復元。"""
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        if not SESSION_PATH.exists():
+            self._notify_session_issue(f"{SESSION_PATH.name} が存在しない（未ログイン）")
+            raise XSessionError(
+                f"{SESSION_PATH} が存在しません。scripts/x_auth_init.sh で再認証してください。"
+            )
+
+        context = await self.browser.new_context(storage_state=str(SESSION_PATH))
+        page = await context.new_page()
+        try:
+            await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
+            url = page.url
+            # /login, /i/flow/login などにリダイレクトされたらセッション切れ
+            if "/login" in url or "/i/flow/login" in url:
+                await self._save_screenshot(page, "session_expired")
+                await page.close()
+                await context.close()
+                self._notify_session_issue("home 遷移で /login にリダイレクトされた")
+                raise XSessionError(
+                    "X セッションが期限切れです。scripts/x_auth_init.sh で再認証してください。"
+                )
+            await page.close()
+            return context
+        except PlaywrightTimeoutError as e:
+            await self._save_screenshot(page, "session_timeout")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            print(f"  ⚠ X セッション検証が Timeout（セッション保全して中断）: {e}")
+            raise
+        except XSessionError:
+            raise
+        except Exception as e:
+            await self._save_screenshot(page, "session_unknown")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            print(f"  ⚠ X セッション検証中の不明エラー: {e}")
+            raise
+
+    async def _click_first_available(self, page, selectors: list[str], *, timeout: int = 3000) -> bool:
+        """セレクタ候補を順に試して最初にヒットしたものをクリック。"""
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=timeout)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _fill_textbox(self, page, tweet_text: str, index: int) -> bool:
+        """index 番目（0-origin）のツイート本文入力欄にテキストを入れる。
+
+        X の compose エディタは contenteditable な div[role="textbox"] で、
+        スレッド追加時は複数表示される。
+        """
+        selectors = [
+            'div[role="textbox"][data-testid^="tweetTextarea_"]',
+            'div[role="textbox"][aria-label*="Post"]',
+            'div[role="textbox"][aria-label*="ポスト"]',
+            'div[role="textbox"][contenteditable="true"]',
+        ]
+        textbox = None
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                cnt = await loc.count()
+                if cnt > index:
+                    textbox = loc.nth(index)
+                    break
+            except Exception:
+                continue
+        if textbox is None:
+            return False
+        try:
+            await textbox.click(timeout=3000)
+            await page.wait_for_timeout(200)
+            # type() は IME 等の影響を受けにくく、文字化けもしにくい
+            await textbox.type(tweet_text, delay=5)
+            await page.wait_for_timeout(300)
+            return True
+        except Exception:
+            return False
+
+    async def _add_thread_slot(self, page) -> bool:
+        """スレッド追加ボタン（+）を押して次の入力枠を出す。"""
+        selectors = [
+            'button[data-testid="addButton"]',
+            'button[aria-label*="Add post"]',
+            'button[aria-label*="ポストを追加"]',
+            'div[role="button"][aria-label*="Add"]',
+        ]
+        return await self._click_first_available(page, selectors, timeout=3000)
+
+    async def _click_post_all(self, page) -> bool:
+        """Post all ボタンを押して全投稿送信。"""
+        selectors = [
+            'button[data-testid="tweetButton"]',
+            'button[data-testid="tweetButtonInline"]',
+            'button:has-text("Post all")',
+            'button:has-text("すべてポスト")',
+            'button:has-text("すべて投稿")',
+            'button:has-text("Post")',
+            'button:has-text("ポスト")',
+        ]
+        return await self._click_first_available(page, selectors, timeout=5000)
+
+    async def _detect_rate_limit(self, page) -> bool:
+        """レート制限の警告が出ていないか。"""
+        try:
+            patterns = [
+                "rate limit",
+                "too many",
+                "制限",
+                "しばらくしてから",
+                "上限に達しました",
+            ]
+            html = (await page.content()).lower()
+            return any(p.lower() in html for p in patterns)
+        except Exception:
+            return False
+
+    async def _open_compose(self, context):
+        """ホームのポスト作成ダイアログを開く。
+
+        /compose/post は仕様変更が起きやすいのでまず home を開いて
+        "ポスト"/"Post" ボタンを押す。だめなら直接 /compose/post にフォールバック。
+        """
+        page = await context.new_page()
+        await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(2000)
+        opened = await self._click_first_available(
+            page,
+            [
+                'a[href="/compose/post"]',
+                'a[data-testid="SideNav_NewTweet_Button"]',
+                'button[data-testid="SideNav_NewTweet_Button"]',
+                'a[aria-label*="Post"]',
+                'a[aria-label*="ポスト"]',
+            ],
+            timeout=3000,
+        )
+        if not opened:
+            await page.goto(X_COMPOSE_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(2000)
+        else:
+            await page.wait_for_timeout(1500)
+        return page
+
+    async def _fetch_latest_tweet_id(self, context) -> str | None:
+        """自分のプロフィール最新ツイートの URL 末尾 tweet_id を取得。"""
+        page = await context.new_page()
+        try:
+            # home 直近の自分のポスト欄から status リンクを拾う
+            await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3500)
+            links = page.locator('a[href*="/status/"]')
+            count = await links.count()
+            for i in range(min(count, 10)):
+                href = await links.nth(i).get_attribute("href")
+                if not href:
+                    continue
+                m = re.search(r"/status/(\d+)", href)
+                if m:
+                    return m.group(1)
+            return None
+        except Exception:
+            return None
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    async def post_thread(self, thread: list[dict]) -> dict:
+        """スレッドを投稿。
+
+        Returns:
+            {"success": bool, "tweet_ids": [...], "error": str|None}
+            tweet_ids はスレッド先頭 tweet の id のみ（後続は返信扱いで個別取得不可）。
+        """
+        if not thread:
+            return {"success": False, "tweet_ids": [], "error": "thread is empty"}
+
+        context = await self._get_context()
+        page = await self._open_compose(context)
+        try:
+            # 1本目
+            if not await self._fill_textbox(page, thread[0]["text"], 0):
+                await self._save_screenshot(page, "fill_failed_0")
+                raise RuntimeError("1本目の入力欄が見つかりません（UI変化の可能性）")
+
+            # 2本目以降は + で枠追加 → 入力
+            for i in range(1, len(thread)):
+                if not await self._add_thread_slot(page):
+                    await self._save_screenshot(page, f"add_slot_failed_{i}")
+                    raise RuntimeError(f"スレッド追加ボタン（+）が見つかりません index={i}")
+                await page.wait_for_timeout(400)
+                if not await self._fill_textbox(page, thread[i]["text"], i):
+                    await self._save_screenshot(page, f"fill_failed_{i}")
+                    raise RuntimeError(f"index={i} の入力欄が見つかりません")
+
+            await self._save_screenshot(page, "pre_post")
+
+            # Post all 押下
+            if not await self._click_post_all(page):
+                await self._save_screenshot(page, "post_button_not_found")
+                raise RuntimeError("Post all ボタンが見つかりません")
+
+            await page.wait_for_timeout(5000)
+
+            # レート制限チェック
+            if await self._detect_rate_limit(page):
+                await self._save_screenshot(page, "rate_limit")
+                _notify(f"⚠️ X レート制限検知、{RATE_LIMIT_WAIT_SEC//60}分後リトライ予定")
+                return {
+                    "success": False,
+                    "tweet_ids": [],
+                    "error": f"rate_limited (wait {RATE_LIMIT_WAIT_SEC}s)",
+                    "rate_limited": True,
+                }
+
+            await self._save_screenshot(page, "post_success")
+
+            tweet_id = await self._fetch_latest_tweet_id(context)
+            if tweet_id:
+                return {"success": True, "tweet_ids": [tweet_id], "error": None}
+            # 投稿は通ったが tweet_id が拾えなかった
+            return {"success": True, "tweet_ids": [], "error": None}
+
+        except XSessionError:
+            raise
+        except Exception as e:
+            await self._save_screenshot(page, "post_exception")
+            _notify(f"❌ Xスレッド投稿失敗\nエラー: {e}")
+            return {"success": False, "tweet_ids": [], "error": str(e)}
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+
+
+async def _post_thread_async(thread: list[dict], headless: bool) -> dict:
+    publisher = XPublisher(headless=headless)
+    await publisher.start()
+    try:
+        return await publisher.post_thread(thread)
+    finally:
+        await publisher.stop()
+
+
+def post_thread_sync(thread: list[dict], *, headless: bool = False) -> dict:
+    """同期ラッパー。scheduler / publisher から呼ぶ。"""
+    return asyncio.run(_post_thread_async(thread, headless))
+
+
+# ─────────────────────────────────────────────────────
 # メインAPI: スレッド作成
 # ─────────────────────────────────────────────────────
 def create_thread(
@@ -511,14 +789,14 @@ def create_thread(
     dry_run: bool = False,
     config: XPublisherConfig | None = None,
 ) -> dict:
-    """記事をスレッド化して投稿（または dry_run でプレビュー）。
+    """記事をスレッド化して Playwright 経由で投稿（または dry_run でプレビュー）。
 
     Returns:
         {
           "success": bool,
           "dry_run": bool,
-          "thread": [...],          # 生成された tweet 配列
-          "tweet_ids": [str, ...],  # 投稿成功時のみ
+          "thread": [...],
+          "tweet_ids": [str, ...],      # 先頭 tweet の id（後続は返信扱い）
           "first_tweet_url": str | None,
           "needs_approval": bool,
           "attempts": int,
@@ -572,7 +850,6 @@ def create_thread(
     }
 
     if not gen["ok"]:
-        # 3回NG → 承認キュー
         if gen["needs_approval"]:
             push_to_approval_queue(article, gen, note_url)
         return {
@@ -585,14 +862,7 @@ def create_thread(
     if dry_run:
         return {**base_response, "success": True, "dry_run": True, "error": None}
 
-    # 2) 本番投稿
-    if not config.has_x_credentials():
-        return {
-            **base_response,
-            "success": False,
-            "dry_run": False,
-            "error": "X認証情報が未設定（X_API_KEY/SECRET/X_ACCESS_TOKEN/SECRET 不足）",
-        }
+    # 2) 本番投稿（Playwright）
     if not config.enabled:
         return {
             **base_response,
@@ -600,41 +870,63 @@ def create_thread(
             "dry_run": False,
             "error": "X_SHARE_ENABLED=false（投稿スキップ）",
         }
-
-    client = _build_client(config)
-    tweet_ids: list[str] = []
-    parent_id: str | None = None
-    try:
-        for i, t in enumerate(gen["thread"]):
-            tid = _post_one_tweet(client, t["text"], in_reply_to_tweet_id=parent_id)
-            tweet_ids.append(tid)
-            parent_id = tid
-            if i < len(gen["thread"]) - 1:
-                time.sleep(random.uniform(0.5, 1.0))
-        first_id = tweet_ids[0]
+    if not SESSION_PATH.exists():
+        _notify(
+            "🔑 X セッション未設定、投稿スキップ\n"
+            "対処: scripts/x_auth_init.sh を実行"
+        )
         return {
             **base_response,
-            "success": True,
+            "success": False,
             "dry_run": False,
-            "tweet_ids": tweet_ids,
-            "first_tweet_url": f"https://x.com/i/web/status/{first_id}",
-            "posted_at": datetime.now().isoformat(),
-            "error": None,
+            "error": f"{SESSION_PATH.name} 未作成（scripts/x_auth_init.sh を実行してください）",
+        }
+
+    try:
+        result = post_thread_sync(gen["thread"], headless=config.headless)
+    except XSessionError as e:
+        return {
+            **base_response,
+            "success": False,
+            "dry_run": False,
+            "error": f"X session error: {e}",
         }
     except Exception as e:
         _notify(
             f"❌ Xスレッド投稿失敗\n"
             f"記事: {article.title}\n"
-            f"投稿済: {len(tweet_ids)}/{len(gen['thread'])}\n"
             f"エラー: {e}"
         )
         return {
             **base_response,
             "success": False,
             "dry_run": False,
-            "tweet_ids": tweet_ids,
             "error": str(e),
         }
+
+    if not result.get("success"):
+        # レート制限の場合はキューに戻す判定は scheduler 側で実施
+        return {
+            **base_response,
+            "success": False,
+            "dry_run": False,
+            "tweet_ids": result.get("tweet_ids", []),
+            "error": result.get("error") or "投稿失敗",
+        }
+
+    tweet_ids = result.get("tweet_ids", [])
+    first_url = (
+        f"https://x.com/i/web/status/{tweet_ids[0]}" if tweet_ids else None
+    )
+    return {
+        **base_response,
+        "success": True,
+        "dry_run": False,
+        "tweet_ids": tweet_ids,
+        "first_tweet_url": first_url,
+        "posted_at": datetime.now().isoformat(),
+        "error": None,
+    }
 
 
 # ─────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
 """x_publisher の単体テスト。
 
-ライブAPIは叩かない:
+Phase 1 は Playwright スクレイピング方式。ライブブラウザは起動しない:
 - スレッド分割は generate_thread() を直接呼ばず、validate_thread() / count_emoji() /
   _check_compliance() / _parse_thread_json() / pop_due_entries() を中心にカバー。
-- live投稿テストは tests/live/ で別途実施（環境変数あり時のみ）。
+- Playwright 経路は post_thread_sync をモックしてフローのみ検証。
+- live投稿テストは session 投入後に手動で実施（tests/live/ 予定）。
 """
 from __future__ import annotations
 
@@ -296,3 +297,154 @@ def test_create_thread_dry_run_returns_thread_when_credentials_missing(monkeypat
     assert res["dry_run"] is True
     assert len(res["thread"]) == 5
     assert res["tweet_ids"] == []
+
+
+# ─── Playwright 経路（モック） ─────────────────────
+def test_create_thread_playwright_session_missing(monkeypatch, tmp_path):
+    """session ファイル未作成 → 投稿スキップして error 返す。"""
+    import src.x_publisher as xp
+
+    sample = _ok_thread(5)
+
+    def fake_call_claude(input_data, *, api_key, model=xp.CLAUDE_MODEL):
+        return sample
+
+    monkeypatch.setattr(xp, "_call_claude", fake_call_claude)
+    # SESSION_PATH を存在しない tmp_path 配下に差し替える
+    monkeypatch.setattr(xp, "SESSION_PATH", tmp_path / ".x-session.json")
+
+    article = Article(
+        title="topic",
+        body="本文",
+        keyword="kw",
+        theme="th",
+        category="pain",
+        template_id="t",
+    )
+    cfg = xp.XPublisherConfig(
+        enabled=True,
+        anthropic_api_key="test_key",
+    )
+    res = xp.create_thread(article, dry_run=False, config=cfg)
+    assert res["success"] is False
+    assert ".x-session.json" in (res["error"] or "")
+
+
+def test_create_thread_playwright_success_mocked(monkeypatch, tmp_path):
+    """Playwright 経路を post_thread_sync モックで通し success を返すことを確認。"""
+    import src.x_publisher as xp
+
+    sample = _ok_thread(5)
+
+    def fake_call_claude(input_data, *, api_key, model=xp.CLAUDE_MODEL):
+        return sample
+
+    # session ファイルを作って存在する状態にする
+    fake_session = tmp_path / ".x-session.json"
+    fake_session.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(xp, "SESSION_PATH", fake_session)
+    monkeypatch.setattr(xp, "_call_claude", fake_call_claude)
+
+    def fake_post_thread_sync(thread, *, headless=False):
+        assert len(thread) == 5
+        return {"success": True, "tweet_ids": ["1234567890"], "error": None}
+
+    monkeypatch.setattr(xp, "post_thread_sync", fake_post_thread_sync)
+
+    article = Article(
+        title="topic",
+        body="本文",
+        keyword="kw",
+        theme="th",
+        category="pain",
+        template_id="t",
+    )
+    cfg = xp.XPublisherConfig(enabled=True, anthropic_api_key="test_key")
+    res = xp.create_thread(article, dry_run=False, config=cfg)
+    assert res["success"] is True
+    assert res["tweet_ids"] == ["1234567890"]
+    assert res["first_tweet_url"] == "https://x.com/i/web/status/1234567890"
+    assert res["posted_at"] is not None
+
+
+def test_create_thread_playwright_failure_mocked(monkeypatch, tmp_path):
+    """Playwright 経路でUI失敗した場合、success=False を返す。"""
+    import src.x_publisher as xp
+
+    sample = _ok_thread(5)
+
+    def fake_call_claude(input_data, *, api_key, model=xp.CLAUDE_MODEL):
+        return sample
+
+    fake_session = tmp_path / ".x-session.json"
+    fake_session.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(xp, "SESSION_PATH", fake_session)
+    monkeypatch.setattr(xp, "_call_claude", fake_call_claude)
+
+    def fake_post_thread_sync(thread, *, headless=False):
+        return {"success": False, "tweet_ids": [], "error": "Post all ボタンが見つかりません"}
+
+    monkeypatch.setattr(xp, "post_thread_sync", fake_post_thread_sync)
+
+    article = Article(
+        title="topic",
+        body="本文",
+        keyword="kw",
+        theme="th",
+        category="pain",
+        template_id="t",
+    )
+    cfg = xp.XPublisherConfig(enabled=True, anthropic_api_key="test_key")
+    res = xp.create_thread(article, dry_run=False, config=cfg)
+    assert res["success"] is False
+    assert "ボタン" in res["error"]
+
+
+def test_create_thread_disabled(monkeypatch, tmp_path):
+    """X_SHARE_ENABLED=false なら投稿スキップして error 返す。"""
+    import src.x_publisher as xp
+
+    sample = _ok_thread(5)
+
+    def fake_call_claude(input_data, *, api_key, model=xp.CLAUDE_MODEL):
+        return sample
+
+    fake_session = tmp_path / ".x-session.json"
+    fake_session.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(xp, "SESSION_PATH", fake_session)
+    monkeypatch.setattr(xp, "_call_claude", fake_call_claude)
+
+    article = Article(
+        title="topic",
+        body="本文",
+        keyword="kw",
+        theme="th",
+        category="pain",
+        template_id="t",
+    )
+    cfg = xp.XPublisherConfig(enabled=False, anthropic_api_key="test_key")
+    res = xp.create_thread(article, dry_run=False, config=cfg)
+    assert res["success"] is False
+    assert "X_SHARE_ENABLED" in (res["error"] or "")
+
+
+# ─── XPublisherConfig ───────────────────────────────
+def test_x_publisher_config_has_credentials_reflects_session(monkeypatch, tmp_path):
+    """has_x_credentials() は SESSION_PATH の有無を返す（スクレイピング方式）。"""
+    import src.x_publisher as xp
+
+    # 存在しない tmp に差し替え → False
+    monkeypatch.setattr(xp, "SESSION_PATH", tmp_path / ".x-session.json")
+    cfg = xp.XPublisherConfig()
+    assert cfg.has_x_credentials() is False
+
+    # ファイル作成 → True
+    (tmp_path / ".x-session.json").write_text("{}", encoding="utf-8")
+    assert cfg.has_x_credentials() is True
+
+
+def test_x_session_error_subclass():
+    """XSessionError は RuntimeError のサブクラス。"""
+    import src.x_publisher as xp
+
+    assert issubclass(xp.XSessionError, RuntimeError)
