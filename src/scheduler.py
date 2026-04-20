@@ -182,3 +182,64 @@ def get_status() -> dict:
         "minutes_until_next": minutes_until_next_post(),
         "can_post_now": can_post(),
     }
+
+
+# ─────────────────────────────────────────────────────
+# X 投稿スケジューラ統合（Phase 1）
+# ─────────────────────────────────────────────────────
+def process_x_queue(*, dry_run: bool = False) -> dict:
+    """queue/x_posts.json から発火時刻に達した投稿を処理する。
+
+    cron や launchd から定期実行される想定。
+
+    Returns:
+        {"processed": [...], "skipped_count": int}
+    """
+    from src import x_publisher
+    from src.generator import load_draft
+
+    due = x_publisher.pop_due_entries()
+    processed: list[dict] = []
+    for entry in due:
+        article_id = entry.get("article_id")
+        draft_path = entry.get("draft_path")
+        if not draft_path or not Path(draft_path).exists():
+            x_publisher.update_entry(
+                article_id,
+                status="failed",
+                error=f"draft が見つからない: {draft_path}",
+            )
+            processed.append({"article_id": article_id, "status": "failed"})
+            continue
+
+        article = load_draft(Path(draft_path))
+        result = x_publisher.create_thread(
+            article,
+            note_url=entry.get("note_url"),
+            axis=entry.get("axis", "A"),
+            thread_length=entry.get("thread_length", 5),
+            cta_variant=entry.get("cta_variant", "free_trial"),
+            dry_run=dry_run,
+        )
+        if result["success"] and not dry_run:
+            x_publisher.update_entry(
+                article_id,
+                status="posted",
+                tweet_ids=result.get("tweet_ids", []),
+                posted_at=result.get("posted_at"),
+                error=None,
+            )
+        elif not result["success"]:
+            x_publisher.update_entry(
+                article_id,
+                status="failed",
+                error=result.get("error"),
+            )
+        processed.append({
+            "article_id": article_id,
+            "status": "posted" if result["success"] and not dry_run else
+                       "dry_run" if result["success"] else "failed",
+            "tweets_count": len(result.get("tweets", [])),
+        })
+
+    return {"processed": processed, "skipped_count": 0}

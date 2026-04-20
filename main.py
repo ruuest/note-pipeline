@@ -22,7 +22,7 @@ load_dotenv(BASE_DIR / ".env")
 
 from src.generator import generate_batch, load_draft, save_draft, generate_article, get_unused_keywords, load_templates, mark_keyword_used
 from src.publisher import publish_article
-from src.scheduler import can_post, log_post, get_status, get_todays_post_count, MAX_DAILY_POSTS, minutes_until_next_post
+from src.scheduler import can_post, log_post, get_status, get_todays_post_count, MAX_DAILY_POSTS, minutes_until_next_post, process_x_queue
 from src.validator import validate_article
 
 DRAFTS_DIR = BASE_DIR / "drafts"

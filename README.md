@@ -111,3 +111,72 @@ bash scripts/x_auth_check.sh    # X API 認証疎通確認
 bash daily_publish.sh           # 日次投稿
 bash scripts/note_daily_summary.sh    # 日次集計
 ```
+
+---
+
+## X スレッド自動投稿（src/x_publisher.py）
+
+note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッドを生成し、
+tweepy 経由で X に連投する機能。
+
+### 仕様（v1.0 / 2026-04-20）
+- システムプロンプト: `docs/x_thread_prompt.md`（プロダクト大臣作成）
+- トーンガイド: `docs/x_tone_guide.md`
+- コンプラルール: `config/compliance_rules.yaml`（CR001-050、景表法/古物営業法/ステマ/X TOS/Meta TOS）
+- LP URL: `https://nvcloud-lp.pages.dev/`（他URL使用禁止）
+- 制約: 各ツイート135字以内、絵文字1ツイート2個まで、CTAは末尾1箇所のみ
+- 再生成: バリデーションNG時は最大3回再生成 → 全NGなら `queue/x_approval_queue.json` に積む
+
+### Article メタデータでの制御
+
+`Article.x_share_mode` で挙動切替:
+
+| 値 | 動作 |
+|---|---|
+| `"none"` (デフォルト) | X投稿しない |
+| `"immediate"` | note投稿成功直後に Xスレッドを生成・投稿 |
+| `"scheduled"` | `queue/x_posts.json` に予約登録（`x_scheduled_at` 未指定なら 1時間後） |
+
+### 必要な環境変数
+
+```env
+X_API_KEY=...
+X_API_SECRET=...
+X_ACCESS_TOKEN=...
+X_ACCESS_TOKEN_SECRET=...
+X_SHARE_ENABLED=true
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+`X_SHARE_ENABLED=false` または認証情報欠落時はスキップ（dry_run と同じ振る舞い）。
+
+### dry_run（投稿せずプレビュー）
+
+```bash
+.venv/bin/python -c "
+from src.models import Article
+from src.x_publisher import create_thread
+article = Article(title='査定工数の課題', body='本文', keyword='工数', theme='工数削減',
+                  category='pain', template_id='t1')
+result = create_thread(article, axis='A', thread_length=5, dry_run=True)
+import json; print(json.dumps(result, ensure_ascii=False, indent=2))
+"
+```
+
+### スケジューラ統合
+
+`src/scheduler.py::process_x_queue()` を cron / launchd から定期実行:
+
+```bash
+*/5 * * * * cd /Users/apple/NorthValueAsset/note-pipeline && \
+  .venv/bin/python -c 'from src.scheduler import process_x_queue; print(process_x_queue())'
+```
+
+### テスト
+
+```bash
+.venv/bin/python -m pytest tests/test_x_publisher.py -v
+```
+
+ライブAPIは叩かない。バリデーション・JSON解析・キュー操作・dry_runをカバー（23件）。
+ライブ投稿テストは天皇による環境変数投入後に別途実施（次タスク予定）。

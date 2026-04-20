@@ -4,3 +4,8 @@ __pycache__/
 .note-session.json
 logs/
 drafts/
+# Xスレッド予約キュー（実データ）
+queue/x_posts.json
+queue/x_approval_queue.json
+queue/*.broken.*.json
+.pytest_cache/

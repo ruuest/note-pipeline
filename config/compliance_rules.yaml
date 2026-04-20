@@ -1,0 +1,734 @@
+# ==========================================================
+# GrowthCabinet (SNSグロースSaaS) 初期コンプライアンスルール seed
+# task_id: task_gc_compliance_seed_001
+# version: v1.0
+# created: 2026-04-20
+# author: minister_product (product_bur1 + product_bur2)
+# total: 50 rules
+# ==========================================================
+# カテゴリ内訳:
+#   kettoho  (景表法): CR001-CR015  (15件)
+#   kobutsu  (古物営業法): CR016-CR025 (10件)
+#   stema    (ステマ規制): CR026-CR035 (10件)
+#   meta_tos (Meta規約): CR036-CR043 (8件)
+#   x_tos    (X ToS): CR044-CR050 (7件)
+# 重大度内訳: block=37 / warn=11 / notice=2
+# ==========================================================
+
+# ==========================================================
+# カテゴリ: 景表法 (kettoho) CR001-CR015
+# 根拠: 景品表示法 第5条 第1号(優良誤認)/第2号(有利誤認)/第3号(誤認指定)
+# ==========================================================
+
+- id: CR001
+  category: kettoho
+  severity: block
+  ng_pattern: '^(.*)(確実に|必ず|絶対に)(儲|稼|利益|成功|高く売れ)(.*)$'
+  regex: true
+  ok_replacement:
+    - '傾向として利益が出やすい'
+    - '事例として利益が確認されている'
+    - '過去の事例では利益が出ることもある（個人差あり）'
+  reason: '景表法 第5条第1号 優良誤認表示の禁止（断定的表現）'
+  applies_to_platform: ['all']
+  example_before: '出張買取は確実に儲かるビジネスです'
+  example_after: '出張買取は傾向として利益が出やすいビジネスです（個人差あり）'
+
+- id: CR002
+  category: kettoho
+  severity: block
+  ng_pattern: '(100%|百パーセント|すべて|全員|全ての方が|みんな)(成功|儲|稼|高く|買取|査定UP)'
+  regex: true
+  ok_replacement:
+    - '多くの方に'
+    - '一般的には'
+    - '事例としては'
+    - '過去の傾向として'
+  reason: '景表法 第5条第1号 優良誤認表示（断定・全称表現）'
+  applies_to_platform: ['all']
+  example_before: '100%高く買取します！全員満足の査定'
+  example_after: '多くの方に満足いただける査定を心がけています'
+
+- id: CR003
+  category: kettoho
+  severity: block
+  ng_pattern: '(最安値|業界最安|日本一安|最も安い|どこよりも安|最低価格)'
+  regex: true
+  ok_replacement:
+    - '相場よりお手頃な価格'
+    - '競争力のある価格帯'
+    - '個人の見解ですが、お得な水準'
+  reason: '景表法 第5条第1号 優良誤認表示（他社比較の根拠なし断定）'
+  applies_to_platform: ['all']
+  example_before: '出張買取業者で業界最安の手数料を実現！'
+  example_after: '出張買取業者の中でも競争力のある手数料設定です'
+
+- id: CR004
+  category: kettoho
+  severity: block
+  ng_pattern: '(No\.?1|ナンバー1|ナンバーワン|業界トップ|業界1位|第1位|ランキング1位|1位)(?!に選ばれたいと|を目指|を取りたい)'
+  regex: true
+  ok_replacement:
+    - '業界の上位水準'
+    - '高い評価をいただいている'
+    - '多くのお客様に選ばれている'
+  reason: '景表法 第5条第1号 優良誤認表示（客観的根拠のないNo.1表示）'
+  applies_to_platform: ['all']
+  example_before: '顧客満足度No.1の出張買取サービス'
+  example_after: '多くのお客様から高い評価をいただいている出張買取サービス'
+
+- id: CR005
+  category: kettoho
+  severity: block
+  ng_pattern: '(業界唯一|唯一無二|他にない|どこにもない|ここだけ|独占的)'
+  regex: true
+  ok_replacement:
+    - '業界でも稀な'
+    - '他社にはない独自の'
+    - '当社ならではの'
+  reason: '景表法 第5条第1号 優良誤認表示（独占性の過剰訴求）'
+  applies_to_platform: ['all']
+  example_before: '業界唯一のAI査定システムを導入'
+  example_after: '業界でも稀なAI査定システムを独自に導入'
+
+- id: CR006
+  category: kettoho
+  severity: block
+  ng_pattern: '(短期間で|すぐに|簡単に|楽して|片手間で|3日で|1週間で|1ヶ月で)(儲|稼|成功|利益|月収|月商)'
+  regex: true
+  ok_replacement:
+    - '継続的な取り組みで'
+    - '一定期間を経て'
+    - '段階的な成長により'
+  reason: '景表法 第5条第1号 優良誤認表示（誇張された即効性）'
+  applies_to_platform: ['all']
+  example_before: '短期間で月収100万円の出張買取ビジネス！'
+  example_after: '継続的な取り組みで収益化を目指せる出張買取ビジネス（個人差あり）'
+
+- id: CR007
+  category: kettoho
+  severity: block
+  ng_pattern: '(誰でも|どなたでも|素人でも|初心者でも)(稼げ|成功|月収|儲か|高収入)'
+  regex: true
+  ok_replacement:
+    - '多くの方が取り組める'
+    - '段階的に習得可能な'
+    - '事例としては初心者の方も成果を出している'
+  reason: '景表法 第5条第1号 優良誤認（成功保証の暗示）'
+  applies_to_platform: ['all']
+  example_before: '誰でも稼げる出張買取ノウハウ'
+  example_after: '多くの方が取り組める出張買取ノウハウ（成果には個人差があります）'
+
+- id: CR008
+  category: kettoho
+  severity: block
+  ng_pattern: '(リスクゼロ|ノーリスク|危険なし|失敗しない|リスクなし|ノー?リスク)'
+  regex: true
+  ok_replacement:
+    - 'リスクを抑えた'
+    - '比較的低リスクな'
+    - 'リスクを最小化する設計'
+  reason: '景表法 第5条第1号 優良誤認（リスク不実告知）'
+  applies_to_platform: ['all']
+  example_before: 'リスクゼロで始められる出張買取事業'
+  example_after: 'リスクを抑えた設計の出張買取事業（在庫/相場変動リスクはあります）'
+
+- id: CR009
+  category: kettoho
+  severity: block
+  ng_pattern: '(元本保証|資金保証|損しない|損失ゼロ|返金保証)(?!制度あり|規定あり)'
+  regex: true
+  ok_replacement:
+    - '返金制度あり（条件付）'
+    - '一定条件下での返金対応'
+    - '個別規定に基づく保証'
+  reason: '景表法 第5条第2号 有利誤認 + 金商法 損失補塡禁止'
+  applies_to_platform: ['all']
+  example_before: '元本保証の出張買取投資プラン'
+  example_after: '条件付き返金制度のある出張買取参画プラン（規定参照）'
+
+- id: CR010
+  category: kettoho
+  severity: block
+  ng_pattern: '(月収|月商|年収|売上)(\s*)?(\d+[万億]|\d+,\d+)(円)?(\s*)?(確実|保証|必ず|可能)'
+  regex: true
+  ok_replacement:
+    - '事例として月商XX万円を達成した方もいます（個人差あり）'
+    - '過去の事例では月商XX万円ゾーンの実績あり'
+    - '一部の方は月収XX万円を実現（成果は個人差あり）'
+  reason: '景表法 第5条第1号 優良誤認（収益保証表示）'
+  applies_to_platform: ['all']
+  example_before: '月収100万確実の出張買取コンサル'
+  example_after: '事例として月収100万円を達成した方もいる出張買取コンサル（個人差あり）'
+
+- id: CR011
+  category: kettoho
+  severity: warn
+  ng_pattern: '(公式認定|国家認定|政府認定|厚労省認定|経産省認定|警察庁認定)(?!?(資格|講座|研修))'
+  regex: true
+  ok_replacement:
+    - '古物商許可取得'
+    - '法令に則り営業'
+    - '公的許認可の元で運営'
+  reason: '景表法 第5条第3号 誤認指定（認定虚偽）+ 刑法 詐欺罪該当の可能性'
+  applies_to_platform: ['all']
+  example_before: '国家認定の出張買取専門店'
+  example_after: '古物商許可を取得して営業する出張買取専門店'
+
+- id: CR012
+  category: kettoho
+  severity: block
+  ng_pattern: '(完全無料|一切費用かからず|全て無料|完全フリー|タダで)(?!?(相談|査定|見積))'
+  regex: true
+  ok_replacement:
+    - '査定・相談は無料（成約時のみ手数料発生）'
+    - '初期無料（個別条件は別途）'
+    - '無料（付帯費用については要確認）'
+  reason: '景表法 第5条第3号 誤認指定（隠れ費用）'
+  applies_to_platform: ['all']
+  example_before: '完全無料で出張買取サービス開始！'
+  example_after: '査定・出張は無料（成約時のみ所定手数料、詳細はLP参照）'
+
+- id: CR013
+  category: kettoho
+  severity: warn
+  ng_pattern: '(期間限定|今だけ|本日限り|今月限り|今週限り|本日まで)(?!.*(\d{4}年|\d{1,2}月|\d{1,2}日))'
+  regex: true
+  ok_replacement:
+    - '期間限定（YYYY年MM月DD日まで）'
+    - '本日○月○日限り'
+    - '○月末までのキャンペーン'
+  reason: '景表法 第5条第2号 有利誤認（二重価格・期間表示の根拠なし）'
+  applies_to_platform: ['all']
+  example_before: '今だけ買取価格20%UPキャンペーン！'
+  example_after: '2026年4月30日まで買取価格20%UPキャンペーン（基準価格：相場平均）'
+
+- id: CR014
+  category: kettoho
+  severity: warn
+  ng_pattern: '(在庫限り|無くなり次第|残りわずか|もうすぐ終了)(?!.*(\d+個|\d+点|\d+名))'
+  regex: true
+  ok_replacement:
+    - '在庫○個限り'
+    - '残り○点（実数を明示）'
+    - '先着○名様まで'
+  reason: '景表法 第5条第2号 有利誤認（在庫希少性の虚偽）'
+  applies_to_platform: ['all']
+  example_before: '在庫限りの特別査定価格！'
+  example_after: '先着10名様限定の特別査定価格（4月30日まで）'
+
+- id: CR015
+  category: kettoho
+  severity: warn
+  ng_pattern: '(限定\s*\d*\s*名|残り\s*\d*\s*枠|先着\s*\d*\s*名)(?!.*?(\d{4}年|\d{1,2}月|\d{1,2}日|まで|限り))'
+  regex: true
+  ok_replacement:
+    - '先着○名様（4月末日まで）'
+    - '限定○枠（期間：○月○日〜○月○日）'
+    - '○月末日時点の残席'
+  reason: '景表法 第5条第2号 有利誤認（限定性の虚偽表示）'
+  applies_to_platform: ['all']
+  example_before: 'コンサル枠残り3名！'
+  example_after: 'コンサル枠残り3名（2026年4月末日時点、5月以降再募集予定）'
+
+# ==========================================================
+# カテゴリ: 古物営業法 (kobutsu) CR016-CR025
+# 根拠: 古物営業法 第3条(許可)/第5条(届出)/第12条(標識)/第14条(営業所外取引)
+#       第15条(本人確認)/第16条(帳簿)/第18条(不正品申告)
+# ==========================================================
+
+- id: CR016
+  category: kobutsu
+  severity: block
+  ng_pattern: '^(?!.*(第?\s*\d{12}\s*号|許可番号|公安委員会)).*?(出張買取|買取(いた)?します|査定(いた)?します)'
+  regex: true
+  ok_replacement:
+    - '古物商許可番号 第XXXXXXXXXXXX号（○○県公安委員会）を明記してください'
+    - 'プロフィール/固定ツイートに許可番号を掲載'
+    - '投稿内またはbio内に許可番号表示必須'
+  reason: '古物営業法 第12条 標識掲示義務（SNS運用でもHP/プロフに番号表示必要）'
+  applies_to_platform: ['all']
+  example_before: '出張買取します！DMどうぞ'
+  example_after: '出張買取します（古物商許可 第123456789012号 東京都公安委員会）DMどうぞ'
+
+- id: CR017
+  category: kobutsu
+  severity: block
+  ng_pattern: '(身分証(明書)?不要|本人確認(なし|不要|ノー)|免許(証)?なく?ても(OK|大丈夫|構いません|買取可))'
+  regex: true
+  ok_replacement:
+    - '本人確認書類をご用意ください（免許証/マイナンバーカード/パスポート等）'
+    - '古物営業法に基づく本人確認を実施'
+    - '法令遵守のため身分証の提示をお願いしています'
+  reason: '古物営業法 第15条第1項 取引相手確認義務（義務免除訴求は違法）'
+  applies_to_platform: ['all']
+  example_before: '身分証明書不要で簡単買取！'
+  example_after: '本人確認書類（免許証/マイナカード等）をご用意ください（法令に基づく義務）'
+
+- id: CR018
+  category: kobutsu
+  severity: block
+  ng_pattern: '(18歳未満|未成年|高校生|中学生|小学生|子供|こども|キッズ)(.*?)(買取|売却|査定|お持ち込み|買いま?す?)'
+  regex: true
+  ok_replacement:
+    - '18歳以上の方を対象とした買取サービス'
+    - '成人の方の買取受付（保護者同伴で例外的対応も可）'
+    - '未成年の方は保護者同伴・同意書必須'
+  reason: '古物営業法 第15条第2項 未成年者買取制限 + 青少年健全育成条例'
+  applies_to_platform: ['all']
+  example_before: '高校生のゲーム機も高額買取！'
+  example_after: '18歳以上の方を対象に買取受付（未成年の方は保護者同伴でご相談ください）'
+
+- id: CR019
+  category: kobutsu
+  severity: warn
+  ng_pattern: '(出張(し|に伺い|で伺|買取))(?!.*(事前(予約|連絡|申請|申告)|届出(済)?|許可制))'
+  regex: true
+  ok_replacement:
+    - '出張買取は事前予約制（古物営業法に基づく事前申請）'
+    - '事前にDM/電話でご連絡ください'
+    - '出張買取は事前許可制の対応'
+  reason: '古物営業法 第5条第1項 行商届出 + 第14条第2項 営業所外取引制限'
+  applies_to_platform: ['all']
+  example_before: '今日の午後お伺いします！飛び込み出張買取'
+  example_after: '事前予約制の出張買取（DMにてご連絡ください、古物営業法準拠）'
+
+- id: CR020
+  category: kobutsu
+  severity: block
+  ng_pattern: '(事情(は)?(聞きません|問いません|気にしません)|来歴(問)?(わず|いません)|出所(を)?(問わず|聞かず)|身元(を)?(気にせず))'
+  regex: true
+  ok_replacement:
+    - 'ご所有の経緯を確認させていただきます（法令遵守）'
+    - '適正取引のため来歴を確認'
+    - '古物営業法に基づき取得経緯を記録'
+  reason: '古物営業法 第18条 不正品申告義務 + 刑法 盗品等罪 幇助の疑い'
+  applies_to_platform: ['all']
+  example_before: '事情は聞きません、高額買取'
+  example_after: 'ご所有の経緯を確認させていただきます（法令遵守のため）'
+
+- id: CR021
+  category: kobutsu
+  severity: block
+  ng_pattern: '(履歴|取引(記録|履歴|台帳)|帳簿|記録)(\s*)?(残(りません|しません|さず)|つけません|ノー)'
+  regex: true
+  ok_replacement:
+    - '古物営業法に基づき取引記録を3年間保管'
+    - '帳簿記載義務に従い適正に管理'
+    - '法定記録を厳守（3年保管）'
+  reason: '古物営業法 第16条 帳簿記載・保管義務（3年）違反'
+  applies_to_platform: ['all']
+  example_before: '取引履歴残しません！匿名取引OK'
+  example_after: '古物営業法に基づき取引記録を3年間適正に保管（情報は厳重管理）'
+
+- id: CR022
+  category: kobutsu
+  severity: warn
+  ng_pattern: '^(?!.*(営業所|店舗所在地|所在地|住所|[都道府県]|市区町村)).*?(古物商|買取店|出張買取専門)'
+  regex: true
+  ok_replacement:
+    - 'プロフィール/bio に営業所所在地（最低でも都道府県＋市区町村）を明記'
+    - '固定ツイートで営業所情報を開示'
+    - '投稿末尾に営業所記載（例: 東京都新宿区）'
+  reason: '古物営業法 第12条 標識 + 第5条第1項 営業所所在地届出'
+  applies_to_platform: ['all']
+  example_before: '古物商運営／出張買取専門'
+  example_after: '古物商運営／出張買取専門（営業所：東京都新宿区、許可番号第XXX号）'
+
+- id: CR023
+  category: kobutsu
+  severity: block
+  ng_pattern: '(匿名(で)?(買取|売却|査定|OK|可能)|無記名|記名不要|ノーネーム(取引)?)'
+  regex: true
+  ok_replacement:
+    - '本人確認のうえ買取（法令遵守）'
+    - '取引相手の確認を実施'
+    - '身元確認完了後に買取成立'
+  reason: '古物営業法 第15条第1項 取引相手確認義務'
+  applies_to_platform: ['all']
+  example_before: '匿名で買取OK！プライバシー完全保護'
+  example_after: '本人確認のうえ買取（情報は法令遵守のもと厳重管理、第三者提供なし）'
+
+- id: CR024
+  category: kobutsu
+  severity: warn
+  ng_pattern: '(自動車|バイク|オートバイ|船舶|美術品|金券|チケット|時計|宝石|衣類|道具|書籍|写真|貨幣|皮革|楽器|ゲーム|家電)(?!.*(許可|取扱品目|品目追加))'
+  regex: true
+  ok_replacement:
+    - '取扱品目: XX（許可番号記載のもの）'
+    - '古物商許可の取扱品目内で対応'
+    - '品目外の場合は別途お問い合わせ'
+  reason: '古物営業法 第3条 許可品目逸脱禁止（13品目内の許可範囲）'
+  applies_to_platform: ['all']
+  example_before: '何でも買取！自動車・バイク・宝石まで対応'
+  example_after: '取扱品目：道具類・宝石貴金属類（許可証記載品目）／自動車・バイクは提携他社へ'
+
+- id: CR025
+  category: kobutsu
+  severity: block
+  ng_pattern: '(古物市場|業者(間|向け)?市場|セリ市|オークション(主催|開催|運営))(?!.*(参加|出席|出品|会員))'
+  regex: true
+  ok_replacement:
+    - '古物市場参加（市場主許可取得済の市場にて）'
+    - '他社主催のオークションに出品'
+    - '業者間取引は提携市場を通じて実施'
+  reason: '古物営業法 第2条第2項第2号 古物市場主の別許可必要'
+  applies_to_platform: ['all']
+  example_before: '当社主催の古物市場開催！業者様集合'
+  example_after: '提携する古物市場へ参加（市場主許可取得済、当社は参加業者として出品）'
+
+# ==========================================================
+# カテゴリ: ステマ規制 (stema) CR026-CR035
+# 根拠: 景表法 内閣府告示令和5年第19号（2023-10-01施行）
+#       消費者庁「ステルスマーケティングに関する運用基準」
+# ==========================================================
+
+- id: CR026
+  category: stema
+  severity: block
+  ng_pattern: 'PR表記欠落（広告投稿で #PR / #広告 / #プロモーション のいずれも本文冒頭になし）'
+  regex: false
+  ok_replacement:
+    - '冒頭に #PR を付ける'
+    - '冒頭に #広告 を付ける'
+    - '冒頭に #プロモーション を付ける'
+  reason: '景表法 内閣府告示令和5年第19号 ステルスマーケティング規制（2023-10-01施行）'
+  applies_to_platform: ['all']
+  example_before: '◯◯さんから紹介された買取SaaS、本当に便利です！'
+  example_after: '#PR ◯◯さんから紹介された買取SaaS、本当に便利です！'
+
+- id: CR027
+  category: stema
+  severity: block
+  ng_pattern: 'アフィリエイトリンク含む投稿で広告表示（#PR / #アフィリエイト / #広告）なし'
+  regex: false
+  ok_replacement:
+    - '冒頭に #PR を追記し、リンクが紹介リンクであることを明示'
+    - '「※アフィリエイトリンクを含みます」を本文に追記'
+  reason: '景表法 内閣府告示令和5年第19号 + 消費者庁運用基準 第2 2-(1)'
+  applies_to_platform: ['all']
+  example_before: 'この査定アプリ神すぎる → https://aff.example.com/xxx'
+  example_after: '#PR この査定アプリ神すぎる → https://aff.example.com/xxx ※アフィリエイトリンクを含みます'
+
+- id: CR028
+  category: stema
+  severity: block
+  ng_pattern: 'インフルエンサー投稿で「提供」「タイアップ」「PR」「広告」のいずれの文字列も本文中に存在しない'
+  regex: false
+  ok_replacement:
+    - '「◯◯（企業名）より提供」と本文に明記'
+    - '「#タイアップ投稿」を冒頭に追記'
+    - '画像上ではなく本文テキストに「#PR」を冒頭明記'
+  reason: '景表法 内閣府告示令和5年第19号 + 消費者庁運用基準 第2 2-(1)'
+  applies_to_platform: ['all']
+  example_before: '使いやすくてお気に入りの査定ツール紹介します'
+  example_after: '#PR ◯◯様より提供。使いやすくてお気に入りの査定ツール紹介します'
+
+- id: CR029
+  category: stema
+  severity: block
+  ng_pattern: '体験談を装った広告（「私が試したら…」型で広告フラグなし）'
+  regex: false
+  ok_replacement:
+    - '冒頭に #PR を追記した上で「私が実際に使った感想」と記載'
+    - '「このツールは◯◯社より提供いただき試しました」に書き換える'
+  reason: '景表法 内閣府告示令和5年第19号 + 消費者庁運用基準 第2 2-(2)'
+  applies_to_platform: ['all']
+  example_before: '私が試したらめちゃくちゃ便利だった買取SaaS'
+  example_after: '#PR ◯◯社から提供いただき試しました。私が使ってみての感想です'
+
+- id: CR030
+  category: stema
+  severity: block
+  ng_pattern: 'レビュー風広告で「広告」「タイアップ」「提供」「PR」の記載なし'
+  regex: false
+  ok_replacement:
+    - '「#PR」を冒頭に明記し、レビュー内容の依頼元を記載'
+    - '「※本レビューは◯◯社提供によるものです」を本文末に追記'
+  reason: '景表法 内閣府告示令和5年第19号'
+  applies_to_platform: ['all']
+  example_before: '【レビュー】話題の査定アプリを使った率直な感想'
+  example_after: '#PR 【レビュー】話題の査定アプリを使った率直な感想（◯◯社提供）'
+
+- id: CR031
+  category: stema
+  severity: block
+  ng_pattern: '第三者推薦を装った自社推薦（自社/関係会社社員が個人アカウントから推薦）'
+  regex: false
+  ok_replacement:
+    - '「当社◯◯です」と所属開示を冒頭に追記'
+    - '「#運営元」「#自社サービス」を冒頭タグに追加'
+    - '第三者アカウントからの推薦投稿は依頼契約を結び #PR を明示'
+  reason: '景表法 内閣府告示令和5年第19号 + 消費者庁運用基準 第2 2-(1)'
+  applies_to_platform: ['all']
+  example_before: '友達が作った買取SaaS、マジで業界変えそう'
+  example_after: '※私は当社◯◯の代表です。自社サービスの紹介です #自社サービス'
+
+- id: CR032
+  category: stema
+  severity: warn
+  ng_pattern: '「個人の感想です」のみで広告表示（#PR等）なし'
+  regex: false
+  ok_replacement:
+    - '「#PR」を冒頭に、さらに「※個人の感想です」を末尾に併記'
+    - '「#広告」を冒頭に明記'
+  reason: '景表法 内閣府告示令和5年第19号（個人の感想では広告表示要件不足）'
+  applies_to_platform: ['all']
+  example_before: '買取SaaSで売上倍増しました！※個人の感想です'
+  example_after: '#PR 買取SaaSで売上倍増しました！※個人の感想です'
+
+- id: CR033
+  category: stema
+  severity: warn
+  ng_pattern: '(#\S+\s+){5,}#PR'
+  regex: true
+  ok_replacement:
+    - '#PR を本文の最冒頭に移動'
+    - '他ハッシュタグを削減し #PR を目立つ位置に配置'
+  reason: '消費者庁運用基準 第2 3-(1)ウ（明瞭性欠如）'
+  applies_to_platform: ['all']
+  example_before: '新商品紹介 #買取 #査定 #便利 #おすすめ #SaaS #業界 #PR'
+  example_after: '#PR 新商品紹介 #買取 #査定 #便利 #おすすめ #SaaS #業界'
+
+- id: CR034
+  category: stema
+  severity: block
+  ng_pattern: '過去に削除済みの広告投稿を再投稿（PR表記なし）'
+  regex: false
+  ok_replacement:
+    - '再投稿時にも必ず #PR を冒頭に付ける'
+    - '再投稿理由を追記（訂正再掲など）'
+  reason: '景表法 内閣府告示令和5年第19号（各投稿ごとに広告表示必要）'
+  applies_to_platform: ['all']
+  example_before: '（元PR投稿を編集して再投稿、#PR削除）'
+  example_after: '#PR （再掲）元の内容に#PRを再付記して投稿'
+
+- id: CR035
+  category: stema
+  severity: block
+  ng_pattern: '動画/画像内のみ PR表記、本文テキストに #PR / #広告 がない'
+  regex: false
+  ok_replacement:
+    - '動画/画像内の表示に加えて、本文冒頭にも #PR を明記'
+    - 'SNSのテキスト領域で即座に判別可能な位置に明記'
+  reason: '消費者庁運用基準 第2 3-(1)イ（即時判別可能な位置に表示）'
+  applies_to_platform: ['all']
+  example_before: '（動画内で小さく「AD」と1秒表示、本文はPR表記なし）'
+  example_after: '#PR （動画内AD表示あり）本文にも #PR を冒頭明記'
+
+# ==========================================================
+# カテゴリ: Meta規約 (meta_tos) CR036-CR043
+# 根拠: Meta Community Standards / Automated Behavior Policy
+# ==========================================================
+
+- id: CR036
+  category: meta_tos
+  severity: block
+  ng_pattern: '過激な政治的表現（特定政党/候補者の攻撃的批判、選挙運動未届）'
+  regex: false
+  ok_replacement:
+    - '事実ベースの中立的記述に書き換える'
+    - '政治トピックは投稿を避ける'
+  reason: 'Meta Community Standards - Coordinating Harm, Promoting Crime'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '◯◯党は売国奴、今すぐ◯◯落選させろ'
+  example_after: '（本投稿は削除推奨。政治的意見は中立表現に）'
+
+- id: CR037
+  category: meta_tos
+  severity: block
+  ng_pattern: 'ヌード / 性的コンテンツ'
+  regex: false
+  ok_replacement:
+    - '該当画像/動画の削除'
+    - 'モザイク等ではMeta基準を満たさないケースあり、完全除去推奨'
+  reason: 'Meta Community Standards - Adult Nudity and Sexual Activity'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '（ヌード画像投稿）'
+  example_after: '（投稿削除、該当画像の使用禁止）'
+
+- id: CR038
+  category: meta_tos
+  severity: block
+  ng_pattern: '暴力的コンテンツ（流血・武器使用・動物虐待等の具体的描写）'
+  regex: false
+  ok_replacement:
+    - '該当画像/動画の削除'
+    - '文脈説明（ニュース報道等）を明記しMeta Advocacy Exception 対応'
+  reason: 'Meta Community Standards - Violent and Graphic Content'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '（流血動画・武器使用画像）'
+  example_after: '（削除。報道等の場合は文脈明記のうえMeta審査フロー）'
+
+- id: CR039
+  category: meta_tos
+  severity: block
+  ng_pattern: '自動化されたなりすまし行動（Automated misleading behavior）'
+  regex: false
+  ok_replacement:
+    - 'アカウント名・プロフィールに「bot」「自動投稿」と明示'
+    - '自動投稿フラグをMeta APIで有効化'
+    - '実在人物のなりすましは即時停止'
+  reason: 'Meta Inauthentic Behavior Policy / Automated Behavior Policy'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '（実在の芸能人名・画像を使ったbotアカウントから自動投稿）'
+  example_after: '（アカウント停止、再運用は bot 明示 + 自社名義で実施）'
+
+- id: CR040
+  category: meta_tos
+  severity: block
+  ng_pattern: 'アルゴリズム操作目的の連投（spam-like behavior）'
+  regex: false
+  ok_replacement:
+    - '投稿間隔を最低30分以上空ける'
+    - '同一内容の再投稿は24時間以上空ける'
+    - '投稿の多様性を確保（異なるキャプション/ハッシュタグ）'
+  reason: 'Meta Spam Policy / Inauthentic Engagement Policy'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '（同一画像・同一キャプションを5分おきに10回投稿）'
+  example_after: '（投稿間隔を30分以上、内容を毎回変化）'
+
+- id: CR041
+  category: meta_tos
+  severity: warn
+  ng_pattern: '偽情報・誤情報の拡散（検証不能な医療/健康/選挙情報等）'
+  regex: false
+  ok_replacement:
+    - '情報源を本文に明記（公的機関/論文/公式発表）'
+    - '「個人の見解」と明示し断定表現を避ける'
+    - 'Meta Fact-Checkerレビュー対象トピックは投稿を避ける'
+  reason: 'Meta False News Policy / Misinformation Policy'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: 'コロナワクチンは危険です！絶対打たないで'
+  example_after: '（医療情報の断定発信は避ける。個人見解なら出典明記 + 「個人の見解」明示）'
+
+- id: CR042
+  category: meta_tos
+  severity: block
+  ng_pattern: 'ヘイトスピーチ（人種/宗教/性別/性的指向/国籍等による差別表現）'
+  regex: false
+  ok_replacement:
+    - '該当表現の削除'
+    - '属性批判ではなく事実批判への書き換え'
+  reason: 'Meta Community Standards - Hate Speech'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '◯◯人は全員信用できない'
+  example_after: '（削除。属性批判は避ける）'
+
+- id: CR043
+  category: meta_tos
+  severity: block
+  ng_pattern: '個人情報の無断公開（doxxing）'
+  regex: false
+  ok_replacement:
+    - '該当情報の削除'
+    - '当事者の明示的な書面同意を取得してから再投稿'
+    - '顔写真はぼかし/モザイク加工'
+  reason: 'Meta Community Standards - Privacy Violations and Image Privacy Rights + 民法709条'
+  applies_to_platform: ['instagram', 'threads', 'facebook']
+  example_before: '（買取先の顧客住所付き画像を投稿）'
+  example_after: '（住所/氏名/顔を全てぼかし/削除、背景も特定不可能化）'
+
+# ==========================================================
+# カテゴリ: X ToS (x_tos) CR044-CR050
+# 根拠: X Developer Agreement and Policy / Automation Rules
+#       Platform Manipulation and Spam Policy / Impersonation Policy
+# ==========================================================
+
+- id: CR044
+  category: x_tos
+  severity: block
+  ng_pattern: 'スパム的な大量同一投稿（同一/類似文面を複数アカウントから短時間で大量投稿）'
+  regex: false
+  ok_replacement:
+    - 'アカウント間での同一文面共有を禁止'
+    - '1アカウント1メッセージの原則を徹底'
+    - 'テンプレ投稿でも10%以上は文面を差し替える'
+  reason: 'X Platform Manipulation and Spam Policy'
+  applies_to_platform: ['x']
+  example_before: '（10アカウントから同一の"この買取SaaS最高"ツイートを1時間以内に投稿）'
+  example_after: '（各アカウントで独自視点/文面で投稿、最低30%の文面差異を確保）'
+
+- id: CR045
+  category: x_tos
+  severity: block
+  ng_pattern: '同一文面の連投（同一アカウントから15分以内に類似度80%以上の文面を複数投稿）'
+  regex: false
+  ok_replacement:
+    - '投稿間隔を30分以上空ける'
+    - '同一内容を再投稿する場合は24時間以上空ける'
+    - 'スレッド（Reply）で派生内容に展開する'
+  reason: 'X Automation Rules - Duplicate Content Policy'
+  applies_to_platform: ['x']
+  example_before: '「今日も買取完了！」を10分おきに3回投稿'
+  example_after: '（1回目は本投稿、2回目はスレッド続きで別内容、24時間後に再投稿）'
+
+- id: CR046
+  category: x_tos
+  severity: warn
+  ng_pattern: '(#\S+\s*){4,}'
+  regex: true
+  ok_replacement:
+    - 'ハッシュタグは投稿内容に関連する2-3個まで'
+    - '人気タグ（#トレンド等）の乱用を避ける'
+    - '関連性のないタグを削除'
+  reason: 'X Platform Manipulation Policy - Hashtag Misuse'
+  applies_to_platform: ['x']
+  example_before: '買取しました #買取 #副業 #投資 #ビットコイン #iPhone #Apple #バズれ #拡散希望 #RT'
+  example_after: '買取しました #買取 #出張買取'
+
+- id: CR047
+  category: x_tos
+  severity: block
+  ng_pattern: '自動DM送信（新規フォロワーへの自動DM / 一斉DM送信 / スクリプトによるDM）'
+  regex: false
+  ok_replacement:
+    - '新規フォロワーへの自動DM機能を無効化'
+    - 'DMは人間が手動で個別対応'
+    - '通知代わりのDMは X公認の通知Bot機能を使用'
+  reason: 'X Automation Rules - Direct Messages'
+  applies_to_platform: ['x']
+  example_before: '（フォローされた瞬間に「フォローありがとうございます！LINE登録は〜」DM自動送信）'
+  example_after: '（自動DMを停止、希望者のみLINE/メールで案内）'
+
+- id: CR048
+  category: x_tos
+  severity: block
+  ng_pattern: 'フォロー / アンフォローのスクリプト操作（aggressive following / mass unfollowing）'
+  regex: false
+  ok_replacement:
+    - 'フォロー/アンフォローは手動のみ'
+    - '1日のフォロー上限をX公式規定内（400件/日）に自主制限'
+    - '大量アンフォローの自動化を停止'
+  reason: 'X Automation Rules - Following and Follower Churn'
+  applies_to_platform: ['x']
+  example_before: '（ツールで1000アカウントを自動フォロー後、3日で自動アンフォロー）'
+  example_after: '（手動で興味あるアカウントのみフォロー、アンフォローも慎重に手動）'
+
+- id: CR049
+  category: x_tos
+  severity: block
+  ng_pattern: '偽エンゲージメント（自動いいね/RT、エンゲージメント購入、相互いいねサークル参加）'
+  regex: false
+  ok_replacement:
+    - '自動エンゲージメントツールの利用停止'
+    - 'いいね/RT購入サービスの契約解除'
+    - '相互エンゲージメント（engagement pods）から脱退'
+  reason: 'X Platform Manipulation Policy - Artificial Amplification'
+  applies_to_platform: ['x']
+  example_before: '（いいね購入サービスで1投稿あたり1000いいねを購入）'
+  example_after: '（オーガニックエンゲージメントのみ、購入/自動化を一切停止）'
+
+- id: CR050
+  category: x_tos
+  severity: block
+  ng_pattern: 'なりすましアカウント運用（他人/他社の名前・画像・プロフィールを装って運用）'
+  regex: false
+  ok_replacement:
+    - 'アカウント名/プロフ画像を自己/自社のものに変更'
+    - 'パロディ/ファンアカウントの場合は「パロディ」「ファンアカウント」を名前とbioに明記'
+    - 'なりすましの場合は即時アカウント停止'
+  reason: 'X Impersonation Policy'
+  applies_to_platform: ['x']
+  example_before: '（実在の有名人名・画像でアカウント作成、なりすまして投稿）'
+  example_after: '（アカウント削除、または「パロディ」明記のうえ再運用）'

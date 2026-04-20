@@ -13,6 +13,10 @@ class Article:
     template_id: str
     generated_at: datetime = field(default_factory=datetime.now)
     image_path: Path | None = None
+    # X 自動投稿モード: "immediate" | "scheduled" | "none"
+    x_share_mode: str = "none"
+    # x_share_mode="scheduled" の場合の投稿予定（None なら 1時間後）
+    x_scheduled_at: datetime | None = None
 
 
 @dataclass

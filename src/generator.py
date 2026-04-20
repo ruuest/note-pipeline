@@ -297,6 +297,10 @@ def save_draft(article: Article) -> Path:
         "template_id": article.template_id,
         "generated_at": article.generated_at.isoformat(),
         "image_path": str(article.image_path) if article.image_path else None,
+        "x_share_mode": article.x_share_mode,
+        "x_scheduled_at": (
+            article.x_scheduled_at.isoformat() if article.x_scheduled_at else None
+        ),
     }
 
     with open(filepath, "w", encoding="utf-8") as f:
@@ -309,6 +313,7 @@ def load_draft(filepath: Path) -> Article:
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
     image_path_raw = data.get("image_path")
+    x_scheduled_raw = data.get("x_scheduled_at")
     return Article(
         title=data["title"],
         body=data["body"],
@@ -318,6 +323,10 @@ def load_draft(filepath: Path) -> Article:
         template_id=data["template_id"],
         generated_at=datetime.fromisoformat(data["generated_at"]),
         image_path=Path(image_path_raw) if image_path_raw else None,
+        x_share_mode=data.get("x_share_mode", "none"),
+        x_scheduled_at=(
+            datetime.fromisoformat(x_scheduled_raw) if x_scheduled_raw else None
+        ),
     )
 
 

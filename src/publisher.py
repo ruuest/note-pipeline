@@ -397,7 +397,10 @@ class NotePublisher:
 
 def publish_article(article: Article, dry_run: bool = False) -> PostResult:
     """同期ラッパー。dry_run=True で公開ボタンをスキップ。"""
-    return asyncio.run(_publish(article, dry_run=dry_run))
+    result = asyncio.run(_publish(article, dry_run=dry_run))
+    if result.success and not dry_run:
+        _trigger_x_share(article, result)
+    return result
 
 
 async def _publish(article: Article, dry_run: bool = False) -> PostResult:
@@ -408,3 +411,53 @@ async def _publish(article: Article, dry_run: bool = False) -> PostResult:
         return result
     finally:
         await publisher.stop()
+
+
+def _trigger_x_share(article: Article, result: PostResult) -> None:
+    """note 投稿成功後に X スレッド共有を発火する。
+
+    article.x_share_mode により分岐:
+      - "immediate": その場で create_thread() を呼んで投稿
+      - "scheduled": queue/x_posts.json に予約登録（x_scheduled_at 未指定なら 1時間後）
+      - "none" (デフォルト): 何もしない
+
+    例外は握りつぶす（note 投稿成功は変えない）。
+    """
+    try:
+        from src import x_publisher
+    except ImportError:
+        return
+
+    mode = getattr(article, "x_share_mode", "none")
+    if mode == "none":
+        return
+
+    if mode == "immediate":
+        try:
+            x_publisher.create_thread(article, note_url=result.note_url)
+        except Exception as e:
+            print(f"  ⚠ X投稿失敗（note投稿は成功）: {e}")
+        return
+
+    if mode == "scheduled":
+        from datetime import timedelta
+
+        sched = (
+            article.x_scheduled_at
+            if article.x_scheduled_at is not None
+            else datetime.now() + timedelta(hours=1)
+        )
+        article_id = (
+            f"{article.generated_at.strftime('%Y%m%d_%H%M%S')}_{article.keyword[:30]}"
+        )
+        entry = x_publisher.XQueueEntry(
+            scheduled_at=sched.isoformat(),
+            article_id=article_id,
+            article_title=article.title,
+            note_url=result.note_url,
+        )
+        try:
+            x_publisher.enqueue(entry)
+            print(f"  📅 X投稿を予約: {sched.isoformat()}")
+        except Exception as e:
+            print(f"  ⚠ Xキュー登録失敗: {e}")
