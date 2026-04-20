@@ -2,16 +2,27 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import (
+    async_playwright,
+    Page,
+    BrowserContext,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from src.models import Article, PostResult
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SESSION_PATH = BASE_DIR / ".note-session.json"
 SCREENSHOTS_DIR = BASE_DIR / "logs" / "screenshots"
+TELEGRAM_NOTIFY = Path("/Users/apple/NorthValueAsset/cabinet/scripts/telegram_notify.sh")
+
+
+class NoteSessionError(RuntimeError):
+    """note セッション関連の致命的エラー（再ログイン必須）。"""
 
 
 class NotePublisher:
@@ -32,37 +43,95 @@ class NotePublisher:
         if self.playwright:
             await self.playwright.stop()
 
+    def _notify_session_issue(self, detail: str) -> None:
+        """セッション関連エラーを Telegram に即通知（失敗しても握りつぶす）。"""
+        try:
+            if TELEGRAM_NOTIFY.exists() and os.access(TELEGRAM_NOTIFY, os.X_OK):
+                msg = (
+                    "🔑 note セッション切れ、再ログインが必要\n"
+                    f"原因: {detail}\n"
+                    "対処: /Users/apple/NorthValueAsset/note-pipeline/scripts/note_auth_init.sh を実行"
+                )
+                subprocess.run(
+                    [str(TELEGRAM_NOTIFY), msg],
+                    timeout=10,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
+
+    async def _save_debug_screenshot(self, page: Page, tag: str) -> None:
+        """セッション検証中の状態スクショ。失敗は無視。"""
+        try:
+            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            await page.screenshot(path=str(SCREENSHOTS_DIR / f"{tag}_{ts}.png"))
+        except Exception:
+            pass
+
     async def _get_context(self) -> BrowserContext:
-        if SESSION_PATH.exists():
-            try:
-                context = await self.browser.new_context(storage_state=str(SESSION_PATH))
-                # セッション有効性チェック
-                page = await context.new_page()
-                await page.goto("https://note.com/dashboard", wait_until="domcontentloaded", timeout=15000)
-                await page.wait_for_timeout(2000)
-                if "/login" in page.url:
-                    await page.close()
-                    await context.close()
-                    raise Exception("Session expired")
-                await page.close()
-                return context
-            except Exception:
-                SESSION_PATH.unlink(missing_ok=True)
+        """保存済セッションから BrowserContext を復元する。
 
-        # セッション切れ → 手動ログインを促す
-        context = await self.browser.new_context()
+        方針:
+          - Session ファイルが無い / 明示的に期限切れ → NoteSessionError を raise
+            し Telegram 通知。cron で headless=False の手動ログインは実用的でないため、
+            再認証は scripts/note_auth_init.sh で別途明示的に行う運用とする。
+          - Timeout / ネットワークエラー → session を削除せず例外を伝搬
+            （一時的な瞬断でセッションを殺さないため）。
+        """
+        if not SESSION_PATH.exists():
+            self._notify_session_issue(f"{SESSION_PATH.name} が存在しない（未ログイン）")
+            raise NoteSessionError(
+                f"{SESSION_PATH} が存在しません。scripts/note_auth_init.sh で再認証してください。"
+            )
+
+        context = await self.browser.new_context(storage_state=str(SESSION_PATH))
         page = await context.new_page()
-        await page.goto("https://note.com/login", wait_until="domcontentloaded")
-        print("セッション切れ。ブラウザで手動ログインしてください...")
-
-        # ログイン完了を待つ
-        while "/login" in page.url or "accounts.google.com" in page.url:
+        try:
+            # タイムアウトを 60秒に緩和（note.com 側の遅延 / ネットワーク変動を吸収）
+            await page.goto(
+                "https://note.com/dashboard",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
             await page.wait_for_timeout(2000)
-
-        print(f"ログイン成功: {page.url}")
-        await context.storage_state(path=str(SESSION_PATH))
-        await page.close()
-        return context
+            if "/login" in page.url:
+                # 明示的なセッション切れ（/login へリダイレクト）
+                await self._save_debug_screenshot(page, "session_expired")
+                await page.close()
+                await context.close()
+                SESSION_PATH.unlink(missing_ok=True)
+                self._notify_session_issue("dashboard 遷移で /login にリダイレクトされた")
+                raise NoteSessionError(
+                    "note セッションが期限切れです。"
+                    "scripts/note_auth_init.sh で再認証してください。"
+                )
+            await page.close()
+            return context
+        except PlaywrightTimeoutError as e:
+            # ネットワーク瞬断等 → セッションを削除せず例外伝搬
+            await self._save_debug_screenshot(page, "session_timeout")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            print(f"  ⚠ セッション検証が Timeout（セッション保全して中断）: {e}")
+            raise
+        except NoteSessionError:
+            raise
+        except Exception as e:
+            # 想定外エラーもセッションは保全、スクショだけ残して再raise
+            await self._save_debug_screenshot(page, "session_unknown")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            print(f"  ⚠ セッション検証中の不明エラー（セッション保全して中断）: {e}")
+            raise
 
     async def publish(self, article: Article, dry_run: bool = False) -> PostResult:
         """note へ投稿する。
