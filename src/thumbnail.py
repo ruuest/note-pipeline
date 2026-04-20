@@ -84,15 +84,23 @@ def _build_html(title: str, category: str) -> str:
     theme = _get_theme(category)
     safe_title = escape(title)
 
-    # タイトルの長さに応じてフォントサイズ調整
-    if len(title) <= 15:
+    # タイトルの長さに応じてフォントサイズ調整（視認性向上のため全段階 +38〜45% 拡大）
+    # 1280x670 に対して line-height 1.45 で 2〜3行までは収まる想定
+    n = len(title)
+    if n <= 10:
+        font_size = 78
+    elif n <= 15:
+        font_size = 72
+    elif n <= 20:
+        font_size = 64
+    elif n <= 25:
+        font_size = 58
+    elif n <= 30:
         font_size = 52
-    elif len(title) <= 25:
-        font_size = 44
-    elif len(title) <= 35:
-        font_size = 38
+    elif n <= 35:
+        font_size = 46
     else:
-        font_size = 32
+        font_size = 40
 
     return f"""<!DOCTYPE html>
 <html>
