@@ -116,11 +116,17 @@ class NotePublisher:
             )
             await page.wait_for_timeout(2000)
 
+            # note の email フィールドは type="text"（note ID も入るため）で
+            # placeholder が英語「mail@example.com or note ID」だったので日本語/英語/note ID を網羅
             email_selectors = [
                 'input[type="email"]',
                 'input[name="email"]',
                 'input[autocomplete="email"]',
+                'input[autocomplete="username"]',
                 'input[placeholder*="メール"]',
+                'input[placeholder*="mail"]',
+                'input[placeholder*="note ID"]',
+                'form input[type="text"]:not([type="password"])',
             ]
             password_selectors = [
                 'input[type="password"]',
@@ -133,6 +139,14 @@ class NotePublisher:
                     loc = page.locator(sel).first
                     if await loc.count() > 0:
                         await loc.fill(email, timeout=5000)
+                        # React controlled input 用に input/change/blur を明示発火
+                        # （ログインボタン disabled 状態の解除を狙う）
+                        try:
+                            await loc.dispatch_event("input")
+                            await loc.dispatch_event("change")
+                            await loc.press("Tab")
+                        except Exception:
+                            pass
                         filled_email = True
                         break
                 except Exception:
@@ -143,6 +157,12 @@ class NotePublisher:
                     loc = page.locator(sel).first
                     if await loc.count() > 0:
                         await loc.fill(password, timeout=5000)
+                        try:
+                            await loc.dispatch_event("input")
+                            await loc.dispatch_event("change")
+                            await loc.press("Tab")
+                        except Exception:
+                            pass
                         filled_password = True
                         break
                 except Exception:
