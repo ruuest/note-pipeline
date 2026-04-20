@@ -8,4 +8,5 @@ dependencies = [
     "playwright>=1.49.0",
     "tweepy>=4.16.0",
     "anthropic>=0.40.0",
+    "playwright-stealth>=2.0.3",
 ]

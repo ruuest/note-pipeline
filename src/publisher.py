@@ -717,11 +717,14 @@ def _trigger_x_share(article: Article, result: PostResult) -> None:
     if mode == "scheduled":
         from datetime import timedelta
 
-        sched = (
+        base = (
             article.x_scheduled_at
             if article.x_scheduled_at is not None
             else datetime.now() + timedelta(hours=1)
         )
+        # ±20分ジッター → 同一日の既存投稿と2時間以上離す
+        jittered = x_publisher.apply_schedule_jitter(base)
+        sched = x_publisher.enforce_min_interval(jittered)
         article_id = (
             f"{article.generated_at.strftime('%Y%m%d_%H%M%S')}_{article.keyword[:30]}"
         )

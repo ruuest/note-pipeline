@@ -448,3 +448,99 @@ def test_x_session_error_subclass():
     import src.x_publisher as xp
 
     assert issubclass(xp.XSessionError, RuntimeError)
+
+
+# ─── ヒューマンライク: ジッター / クールダウン ──────────
+def test_apply_schedule_jitter_within_bounds():
+    """apply_schedule_jitter は ±spread_sec 以内のオフセットを乗せる。"""
+    import src.x_publisher as xp
+
+    base = datetime(2026, 4, 20, 12, 0, 0)
+    for _ in range(50):
+        j = xp.apply_schedule_jitter(base, spread_sec=1200)
+        delta = abs((j - base).total_seconds())
+        assert delta <= 1200
+
+
+def test_enforce_min_interval_spaces_out(tmp_path, monkeypatch):
+    """同一日の既存予定と 2h 以上離れるよう候補時刻を後ろにずらす。"""
+    import src.x_publisher as xp
+
+    qfile = tmp_path / "x_posts.json"
+    monkeypatch.setattr(xp, "QUEUE_FILE", qfile)
+    monkeypatch.setattr(xp, "QUEUE_DIR", tmp_path)
+
+    # 12:00 に1件ある状態で 12:30 候補 → 最低 2h 後ろにずれる
+    existing = datetime(2026, 4, 20, 12, 0, 0).isoformat()
+    xp.enqueue(xp.XQueueEntry(scheduled_at=existing, article_id="a0", article_title="T0"))
+    candidate = datetime(2026, 4, 20, 12, 30, 0)
+    adjusted = xp.enforce_min_interval(candidate, min_sec=7200)
+    assert (adjusted - datetime(2026, 4, 20, 12, 0, 0)).total_seconds() >= 7200
+
+
+def test_cooldown_enter_and_check(tmp_path, monkeypatch):
+    """3回失敗で cooldown、_in_cooldown が True を返す。"""
+    import src.x_publisher as xp
+
+    cooldown = tmp_path / ".x-cooldown.lock"
+    failures = tmp_path / ".x-failures.log"
+    monkeypatch.setattr(xp, "COOLDOWN_FILE", cooldown)
+    monkeypatch.setattr(xp, "FAILURE_LOG", failures)
+
+    assert xp._in_cooldown() is False
+    xp._record_failure("e1")
+    xp._record_failure("e2")
+    assert xp._in_cooldown() is False  # まだ2回
+    xp._record_failure("e3")
+    # 3回目で cooldown 発動
+    assert xp._in_cooldown() is True
+
+
+def test_cooldown_reset_on_success(tmp_path, monkeypatch):
+    """成功で failure カウントリセット。"""
+    import src.x_publisher as xp
+
+    cooldown = tmp_path / ".x-cooldown.lock"
+    failures = tmp_path / ".x-failures.log"
+    monkeypatch.setattr(xp, "COOLDOWN_FILE", cooldown)
+    monkeypatch.setattr(xp, "FAILURE_LOG", failures)
+
+    xp._record_failure("e1")
+    xp._record_failure("e2")
+    xp._record_success()
+    assert xp._read_failure_count() == 0
+
+
+def test_create_thread_blocked_by_cooldown(monkeypatch, tmp_path):
+    """クールダウン中は投稿スキップ。"""
+    import src.x_publisher as xp
+
+    sample = _ok_thread(5)
+
+    def fake_call_claude(input_data, *, api_key, model=xp.CLAUDE_MODEL):
+        return sample
+
+    fake_session = tmp_path / ".x-session.json"
+    fake_session.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(xp, "SESSION_PATH", fake_session)
+    monkeypatch.setattr(xp, "_call_claude", fake_call_claude)
+
+    # クールダウンファイルを未来時刻で作成
+    cooldown = tmp_path / ".x-cooldown.lock"
+    future = (datetime.now() + timedelta(hours=12)).isoformat()
+    cooldown.write_text(future, encoding="utf-8")
+    monkeypatch.setattr(xp, "COOLDOWN_FILE", cooldown)
+
+    def fake_post_thread_sync(thread, *, headless=False):
+        raise AssertionError("クールダウン中なのに呼ばれてはいけない")
+
+    monkeypatch.setattr(xp, "post_thread_sync", fake_post_thread_sync)
+
+    article = Article(
+        title="topic", body="本文", keyword="kw", theme="th",
+        category="pain", template_id="t",
+    )
+    cfg = xp.XPublisherConfig(enabled=True, anthropic_api_key="test_key")
+    res = xp.create_thread(article, dry_run=False, config=cfg)
+    assert res["success"] is False
+    assert "クールダウン" in (res["error"] or "")

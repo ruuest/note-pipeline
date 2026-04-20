@@ -3,16 +3,22 @@
 note記事を Claude Sonnet 4.6 で 3〜7 ツイートのスレッドに分割し、
 Playwright で x.com にログインセッションを復元して順次投稿する。
 
-【設計方針 v2.0 (2026-04-20)】
+【設計方針 v2.1 (2026-04-20) — ヒューマンライク強化】
 - API 経路（tweepy）は廃止。.x-session.json を使った Playwright スクレイピング。
-- note publisher (src/publisher.py) と同じパターン:
-  - storage_state で session 復元 → x.com/home
-  - 失敗時 logs/screenshots/ にスクショ保存
-  - 未ログイン/期限切れは XSessionError で Telegram 通知
-- スレッドは UI の "+" / "追加" ボタンで入力欄を増やして一気に "Post all"。
-- tweet_id は自分のプロフィール最新ツイートの URL 末尾から取得。
-- セレクタは aria-label / data-testid / text の多段 fallback。
+- **ボット検知回避のためのヒューマンライク動作**:
+  - 1文字ずつタイピング（40〜180ms/char + 句読点後の考える間 + 迷いポーズ）
+  - 固定 sleep 全廃、全てランダムジッター
+  - マウスはベジェ風迂回 → ホバー → down/up 分解
+  - プリ行動: home でスクロール滞在、TL クリック→戻る（30%確率）
+  - ポスト行動: プロフィール滞在
+  - フィンガープリント固定: macOS Chrome UA / 1440x900 / ja-JP / Asia/Tokyo
+  - playwright-stealth で webdriver 等 JS 検知を封じる
+- タイミングは logs/x_timing_*.log に記録（分布確認用）
+- note publisher (src/publisher.py) と同じ session エラーハンドリング
+- 失敗時 logs/screenshots/ にスクショ保存
+- 未ログイン/期限切れは XSessionError で Telegram 通知
 - .env の X_BEARER_TOKEN 等は optional（将来のフォールバック用に残置）。
+- 3回連続失敗で 24 時間クールダウン（.x-cooldown.lock で管理）。
 
 【プロダクト大臣の仕様 v1.0 (2026-04-20) 準拠】
 - システムプロンプト: docs/x_thread_prompt.md の §「システムプロンプト」を抽出
@@ -28,12 +34,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
+import random
 import re
 import subprocess
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.models import Article
@@ -46,8 +54,58 @@ PROMPT_PATH = BASE_DIR / "docs" / "x_thread_prompt.md"
 TONE_GUIDE_PATH = BASE_DIR / "docs" / "x_tone_guide.md"
 COMPLIANCE_RULES_PATH = BASE_DIR / "config" / "compliance_rules.yaml"
 SESSION_PATH = BASE_DIR / ".x-session.json"
+COOLDOWN_FILE = BASE_DIR / ".x-cooldown.lock"
+FAILURE_LOG = BASE_DIR / ".x-failures.log"
+TIMING_LOG_DIR = BASE_DIR / "logs"
 SCREENSHOTS_DIR = BASE_DIR / "logs" / "screenshots"
 TELEGRAM_NOTIFY = Path("/Users/apple/NorthValueAsset/cabinet/scripts/telegram_notify.sh")
+
+# ─── ヒューマンライク動作パラメータ ───
+TYPE_CHAR_DELAY_MIN = 0.04  # 秒/文字（最小）
+TYPE_CHAR_DELAY_MAX = 0.18  # 秒/文字（最大）
+TYPE_PAUSE_AFTER_PUNCT_MIN = 0.2  # 句読点後の考える間
+TYPE_PAUSE_AFTER_PUNCT_MAX = 0.6
+TYPE_HESITATION_PROB = 0.05  # 5%確率で
+TYPE_HESITATION_MIN = 0.5  # 迷いポーズ
+TYPE_HESITATION_MAX = 1.5
+
+JITTER_PAGE_TRANSITION_MIN = 2.0  # 画面遷移後
+JITTER_PAGE_TRANSITION_MAX = 4.5
+JITTER_ADD_SLOT_MIN = 1.5  # + 枠追加の間
+JITTER_ADD_SLOT_MAX = 3.5
+JITTER_PRE_SUBMIT_MIN = 3.0  # 投稿ボタン前
+JITTER_PRE_SUBMIT_MAX = 6.0
+
+PRE_ACTION_SCROLL_COUNT = (2, 4)  # ランダム回数
+PRE_ACTION_DWELL_MIN = 5.0
+PRE_ACTION_DWELL_MAX = 15.0
+POST_ACTION_DWELL_MIN = 8.0
+POST_ACTION_DWELL_MAX = 20.0
+TL_CLICK_PROB = 0.30
+
+HOVER_BEFORE_CLICK_MIN = 0.05  # 50ms
+HOVER_BEFORE_CLICK_MAX = 0.20  # 200ms
+MOUSE_PATH_STEPS = (3, 5)  # ベジェ風経路ステップ数
+
+# 失敗/クールダウン
+MAX_CONSECUTIVE_FAILURES = 3
+COOLDOWN_DURATION_SEC = 24 * 3600
+RATE_LIMIT_WAIT_MIN = 30 * 60  # 30分
+RATE_LIMIT_WAIT_MAX = 60 * 60  # 60分
+
+# 投稿時刻ジッター（scheduler 側で使用）
+SCHEDULE_JITTER_SEC = 20 * 60  # ±20分
+MIN_INTERVAL_BETWEEN_POSTS_SEC = 2 * 3600  # 同一日 最低2時間
+
+# フィンガープリント（macOS Chrome 最新版 実在 UA、2026-04 時点）
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+DEFAULT_VIEWPORT = {"width": 1440, "height": 900}
+DEFAULT_LOCALE = "ja-JP"
+DEFAULT_TIMEZONE = "Asia/Tokyo"
 
 # X UI 制約（投稿本体の制限値は従来通り）
 TWEET_HARD_LIMIT = 280
@@ -77,6 +135,79 @@ CTA_VARIANTS = {
 
 class XSessionError(RuntimeError):
     """X セッション関連の致命的エラー（再ログイン必須）。"""
+
+
+class XCooldownError(RuntimeError):
+    """連続失敗クールダウン中。投稿スキップ。"""
+
+
+# ─────────────────────────────────────────────────────
+# 失敗カウント / クールダウン
+# ─────────────────────────────────────────────────────
+def _read_failure_count() -> int:
+    if not FAILURE_LOG.exists():
+        return 0
+    try:
+        return int(FAILURE_LOG.read_text(encoding="utf-8").strip() or "0")
+    except (ValueError, OSError):
+        return 0
+
+
+def _write_failure_count(n: int) -> None:
+    try:
+        FAILURE_LOG.write_text(str(n), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _reset_failure_count() -> None:
+    try:
+        if FAILURE_LOG.exists():
+            FAILURE_LOG.unlink()
+    except OSError:
+        pass
+
+
+def _in_cooldown() -> bool:
+    if not COOLDOWN_FILE.exists():
+        return False
+    try:
+        until = datetime.fromisoformat(COOLDOWN_FILE.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return False
+    if datetime.now() < until:
+        return True
+    # クールダウン解除
+    try:
+        COOLDOWN_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    _reset_failure_count()
+    return False
+
+
+def _enter_cooldown(reason: str) -> None:
+    until = datetime.now() + timedelta(seconds=COOLDOWN_DURATION_SEC)
+    try:
+        COOLDOWN_FILE.write_text(until.isoformat(), encoding="utf-8")
+    except OSError:
+        pass
+    _notify(
+        f"🛑 X投稿 24時間クールダウン開始\n"
+        f"理由: {reason}\n"
+        f"再開: {until.strftime('%Y-%m-%d %H:%M')}"
+    )
+
+
+def _record_failure(reason: str) -> None:
+    cnt = _read_failure_count() + 1
+    _write_failure_count(cnt)
+    if cnt >= MAX_CONSECUTIVE_FAILURES:
+        _enter_cooldown(f"連続{cnt}回失敗: {reason}")
+
+
+def _record_success() -> None:
+    _reset_failure_count()
 
 
 # ─────────────────────────────────────────────────────
@@ -463,33 +594,171 @@ def push_to_approval_queue(article: Article, attempt_result: dict, note_url: str
 # Playwright XPublisher（スクレイピング方式）
 # ─────────────────────────────────────────────────────
 class XPublisher:
-    """Playwright で x.com に投稿する。
+    """Playwright で x.com に投稿する（ヒューマンライク動作）。
 
     責務:
-      - .x-session.json から BrowserContext を復元
-      - ホームのポスト作成ダイアログ or /compose/post 経由で投稿
+      - .x-session.json から BrowserContext を復元（UA/viewport/locale/tz 固定）
+      - playwright-stealth で navigator.webdriver 等を偽装
+      - ホームで事前スクロール → Post ダイアログ → 1文字ずつタイピング
+      - マウス操作はベジェ風迂回 + ホバー + down/up 分解
       - スレッド: 本文入力 → "+" で次枠追加 → 全て入力後 "Post all"
       - 失敗時は logs/screenshots/ にスクショ保存 + Telegram 通知
-      - レート制限ダイアログ検知で 30 分 sleep リトライ
+      - レート制限ダイアログ検知で 30〜60 分 sleep リトライ
+      - 3 回連続失敗で 24 時間クールダウン
+      - タイミングは logs/x_timing_*.log に記録
     """
 
     def __init__(self, headless: bool = False):
         self.headless = headless
         self.playwright = None
         self.browser = None
+        self._timing_log: list[tuple[str, float]] = []
+        self._timing_session = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     async def start(self):
         from playwright.async_api import async_playwright
 
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=self.headless)
+        # Chrome っぽい起動引数（自動化検知を緩和）
+        self.browser = await self.playwright.chromium.launch(
+            headless=self.headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+            ],
+        )
 
     async def stop(self):
+        self._flush_timing_log()
         if self.browser:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
 
+    # ─── Timing log ────────────────────────────────
+    def _log_timing(self, label: str, seconds: float) -> None:
+        self._timing_log.append((label, seconds))
+
+    def _flush_timing_log(self) -> None:
+        if not self._timing_log:
+            return
+        try:
+            TIMING_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            path = TIMING_LOG_DIR / f"x_timing_{self._timing_session}.log"
+            with open(path, "a", encoding="utf-8") as f:
+                for label, sec in self._timing_log:
+                    f.write(f"{datetime.now().isoformat()}\t{label}\t{sec:.3f}\n")
+            self._timing_log.clear()
+        except OSError:
+            pass
+
+    # ─── Jitter / human-like helpers ───────────────
+    async def _jitter_sleep(self, page, low: float, high: float, label: str = "jitter") -> None:
+        wait = random.uniform(low, high)
+        self._log_timing(label, wait)
+        await page.wait_for_timeout(int(wait * 1000))
+
+    async def _human_type(self, page, text: str) -> None:
+        """1文字ずつ人間のようにタイピング。
+
+        - 各文字 40〜180ms
+        - 句読点/改行後は 200〜600ms の「考える間」
+        - 5% 確率で 500〜1500ms の「迷いポーズ」
+        """
+        start = time.monotonic()
+        for ch in text:
+            # 迷いポーズ（発生確率低）
+            if random.random() < TYPE_HESITATION_PROB:
+                pause = random.uniform(TYPE_HESITATION_MIN, TYPE_HESITATION_MAX)
+                self._log_timing("type_hesitation", pause)
+                await page.wait_for_timeout(int(pause * 1000))
+
+            # 1文字入力
+            await page.keyboard.type(ch)
+
+            # 文字間ディレイ
+            delay = random.uniform(TYPE_CHAR_DELAY_MIN, TYPE_CHAR_DELAY_MAX)
+            await page.wait_for_timeout(int(delay * 1000))
+
+            # 句読点/改行後の考える間
+            if ch in ("。", "、", "\n", "！", "？", "!", "?"):
+                pause = random.uniform(
+                    TYPE_PAUSE_AFTER_PUNCT_MIN, TYPE_PAUSE_AFTER_PUNCT_MAX
+                )
+                self._log_timing("type_punct_pause", pause)
+                await page.wait_for_timeout(int(pause * 1000))
+        elapsed = time.monotonic() - start
+        self._log_timing(f"type_total_{len(text)}ch", elapsed)
+
+    async def _human_mouse_move_to(self, page, target_x: float, target_y: float) -> None:
+        """現在位置から target に向かってベジェ風に 3〜5 ステップで迂回。"""
+        steps = random.randint(*MOUSE_PATH_STEPS)
+        # 現在位置は知らないので左上からとみなす（Playwright の mouse は
+        # 最後の move 位置を保持する）。中継点はランダム曲率で生成。
+        start_x = random.uniform(100, 400)
+        start_y = random.uniform(100, 400)
+        # コントロール点（ベジェ曲線風）
+        ctrl_x = (start_x + target_x) / 2 + random.uniform(-120, 120)
+        ctrl_y = (start_y + target_y) / 2 + random.uniform(-120, 120)
+        for i in range(1, steps + 1):
+            t = i / steps
+            # 2次ベジェ: B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
+            x = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * ctrl_x + t**2 * target_x
+            y = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * ctrl_y + t**2 * target_y
+            try:
+                await page.mouse.move(x, y)
+            except Exception:
+                pass
+            await page.wait_for_timeout(random.randint(20, 80))
+
+    async def _human_click(self, page, selector: str, *, timeout: int = 5000) -> bool:
+        """マウス迂回 → ホバー → down/up 分解クリック。"""
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() == 0:
+                return False
+            try:
+                await loc.scroll_into_view_if_needed(timeout=2000)
+            except Exception:
+                pass
+            box = await loc.bounding_box(timeout=timeout)
+            if not box:
+                # bounding_box が取れない場合は通常クリック
+                await loc.click(timeout=timeout)
+                return True
+            # クリック位置は要素内ランダム
+            target_x = box["x"] + random.uniform(box["width"] * 0.3, box["width"] * 0.7)
+            target_y = box["y"] + random.uniform(
+                box["height"] * 0.3, box["height"] * 0.7
+            )
+            await self._human_mouse_move_to(page, target_x, target_y)
+            # ホバー
+            hover = random.uniform(HOVER_BEFORE_CLICK_MIN, HOVER_BEFORE_CLICK_MAX)
+            await page.wait_for_timeout(int(hover * 1000))
+            # down → up 分解
+            await page.mouse.down()
+            await page.wait_for_timeout(random.randint(30, 120))
+            await page.mouse.up()
+            return True
+        except Exception:
+            return False
+
+    async def _click_first_available_human(
+        self, page, selectors: list[str], *, timeout: int = 3000
+    ) -> bool:
+        """セレクタ候補を順に試し、最初にヒットしたものを人間風クリック。"""
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    ok = await self._human_click(page, sel, timeout=timeout)
+                    if ok:
+                        return True
+            except Exception:
+                continue
+        return False
+
+    # ─── Session / Screenshots ─────────────────────
     def _notify_session_issue(self, detail: str) -> None:
         _notify(
             "🔑 X セッション切れ、再ログインが必要\n"
@@ -507,8 +776,18 @@ class XPublisher:
         except Exception:
             return None
 
+    async def _apply_stealth(self, context) -> None:
+        """playwright-stealth で JS 側フィンガープリント偽装。失敗は握りつぶす。"""
+        try:
+            from playwright_stealth import Stealth
+
+            stealth = Stealth()
+            await stealth.apply_stealth_async(context)
+        except Exception as e:
+            print(f"  ⚠ stealth 適用失敗（投稿は続行）: {e}")
+
     async def _get_context(self):
-        """保存済みセッションから BrowserContext を復元。"""
+        """保存済みセッションから BrowserContext を復元（フィンガープリント固定）。"""
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
         if not SESSION_PATH.exists():
@@ -517,13 +796,31 @@ class XPublisher:
                 f"{SESSION_PATH} が存在しません。scripts/x_auth_init.sh で再認証してください。"
             )
 
-        context = await self.browser.new_context(storage_state=str(SESSION_PATH))
+        context = await self.browser.new_context(
+            storage_state=str(SESSION_PATH),
+            user_agent=DEFAULT_USER_AGENT,
+            viewport=DEFAULT_VIEWPORT,
+            locale=DEFAULT_LOCALE,
+            timezone_id=DEFAULT_TIMEZONE,
+        )
+        # navigator.webdriver 偽装 + 小道具
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            "Object.defineProperty(navigator, 'languages', {get: () => ['ja-JP', 'ja', 'en-US', 'en']});"
+            "Object.defineProperty(navigator, 'platform', {get: () => 'MacIntel'});"
+        )
+        await self._apply_stealth(context)
+
         page = await context.new_page()
         try:
             await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3000)
+            await self._jitter_sleep(
+                page,
+                JITTER_PAGE_TRANSITION_MIN,
+                JITTER_PAGE_TRANSITION_MAX,
+                "session_check_load",
+            )
             url = page.url
-            # /login, /i/flow/login などにリダイレクトされたらセッション切れ
             if "/login" in url or "/i/flow/login" in url:
                 await self._save_screenshot(page, "session_expired")
                 await page.close()
@@ -541,7 +838,7 @@ class XPublisher:
             except Exception:
                 pass
             await context.close()
-            print(f"  ⚠ X セッション検証が Timeout（セッション保全して中断）: {e}")
+            print(f"  ⚠ X セッション検証が Timeout: {e}")
             raise
         except XSessionError:
             raise
@@ -555,24 +852,71 @@ class XPublisher:
             print(f"  ⚠ X セッション検証中の不明エラー: {e}")
             raise
 
-    async def _click_first_available(self, page, selectors: list[str], *, timeout: int = 3000) -> bool:
-        """セレクタ候補を順に試して最初にヒットしたものをクリック。"""
-        for sel in selectors:
+    # ─── Pre / Post 行動 ────────────────────────────
+    async def _warmup_home(self, page) -> None:
+        """投稿前に home でスクロール滞在。"""
+        scroll_count = random.randint(*PRE_ACTION_SCROLL_COUNT)
+        for _ in range(scroll_count):
             try:
-                loc = page.locator(sel).first
-                if await loc.count() > 0:
-                    await loc.click(timeout=timeout)
-                    return True
+                delta = random.randint(400, 900)
+                await page.mouse.wheel(0, delta)
             except Exception:
-                continue
-        return False
+                pass
+            await self._jitter_sleep(page, 0.8, 2.2, "pre_scroll")
+        await self._jitter_sleep(
+            page, PRE_ACTION_DWELL_MIN, PRE_ACTION_DWELL_MAX, "pre_dwell"
+        )
 
-    async def _fill_textbox(self, page, tweet_text: str, index: int) -> bool:
-        """index 番目（0-origin）のツイート本文入力欄にテキストを入れる。
+    async def _browse_timeline(self, page) -> None:
+        """30%確率で TL のツイートを1つ開いて戻る。"""
+        if random.random() > TL_CLICK_PROB:
+            return
+        try:
+            article = page.locator('article[data-testid="tweet"]').first
+            if await article.count() == 0:
+                return
+            box = await article.bounding_box(timeout=2000)
+            if not box:
+                return
+            tx = box["x"] + box["width"] * 0.5
+            ty = box["y"] + box["height"] * 0.3
+            await self._human_mouse_move_to(page, tx, ty)
+            await page.wait_for_timeout(random.randint(100, 300))
+            try:
+                await article.click(timeout=3000)
+            except Exception:
+                return
+            await self._jitter_sleep(page, 2.5, 5.0, "tl_dwell")
+            await page.go_back(wait_until="domcontentloaded", timeout=30000)
+            await self._jitter_sleep(page, 1.0, 2.5, "tl_back")
+        except Exception:
+            pass
 
-        X の compose エディタは contenteditable な div[role="textbox"] で、
-        スレッド追加時は複数表示される。
-        """
+    async def _post_action_dwell(self, context) -> None:
+        """投稿後、プロフィール画面に滞在。"""
+        try:
+            page = await context.new_page()
+            await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
+            await self._jitter_sleep(page, 1.5, 3.0, "post_action_load")
+            for _ in range(random.randint(1, 3)):
+                try:
+                    await page.mouse.wheel(0, random.randint(300, 700))
+                except Exception:
+                    pass
+                await self._jitter_sleep(page, 0.8, 2.0, "post_scroll")
+            await self._jitter_sleep(
+                page, POST_ACTION_DWELL_MIN, POST_ACTION_DWELL_MAX, "post_dwell"
+            )
+            try:
+                await page.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # ─── UI 操作 ────────────────────────────────
+    async def _fill_textbox_human(self, page, tweet_text: str, index: int) -> bool:
+        """index 番目（0-origin）のツイート本文入力欄にテキストを人間風に入力。"""
         selectors = [
             'div[role="textbox"][data-testid^="tweetTextarea_"]',
             'div[role="textbox"][aria-label*="Post"]',
@@ -580,39 +924,50 @@ class XPublisher:
             'div[role="textbox"][contenteditable="true"]',
         ]
         textbox = None
+        hit_selector = None
         for sel in selectors:
             try:
                 loc = page.locator(sel)
                 cnt = await loc.count()
                 if cnt > index:
                     textbox = loc.nth(index)
+                    hit_selector = sel
                     break
             except Exception:
                 continue
-        if textbox is None:
+        if textbox is None or hit_selector is None:
             return False
         try:
-            await textbox.click(timeout=3000)
-            await page.wait_for_timeout(200)
-            # type() は IME 等の影響を受けにくく、文字化けもしにくい
-            await textbox.type(tweet_text, delay=5)
-            await page.wait_for_timeout(300)
+            # クリック領域にマウス移動
+            box = await textbox.bounding_box(timeout=3000)
+            if box:
+                tx = box["x"] + random.uniform(box["width"] * 0.2, box["width"] * 0.8)
+                ty = box["y"] + random.uniform(box["height"] * 0.3, box["height"] * 0.7)
+                await self._human_mouse_move_to(page, tx, ty)
+                await page.wait_for_timeout(random.randint(50, 150))
+                try:
+                    await textbox.click(timeout=3000)
+                except Exception:
+                    await page.mouse.click(tx, ty)
+            else:
+                await textbox.click(timeout=3000)
+            await page.wait_for_timeout(random.randint(150, 400))
+            await self._human_type(page, tweet_text)
+            await self._jitter_sleep(page, 0.3, 0.8, "after_type")
             return True
         except Exception:
             return False
 
-    async def _add_thread_slot(self, page) -> bool:
-        """スレッド追加ボタン（+）を押して次の入力枠を出す。"""
+    async def _add_thread_slot_human(self, page) -> bool:
         selectors = [
             'button[data-testid="addButton"]',
             'button[aria-label*="Add post"]',
             'button[aria-label*="ポストを追加"]',
             'div[role="button"][aria-label*="Add"]',
         ]
-        return await self._click_first_available(page, selectors, timeout=3000)
+        return await self._click_first_available_human(page, selectors, timeout=3000)
 
-    async def _click_post_all(self, page) -> bool:
-        """Post all ボタンを押して全投稿送信。"""
+    async def _click_post_all_human(self, page) -> bool:
         selectors = [
             'button[data-testid="tweetButton"]',
             'button[data-testid="tweetButtonInline"]',
@@ -622,10 +977,9 @@ class XPublisher:
             'button:has-text("Post")',
             'button:has-text("ポスト")',
         ]
-        return await self._click_first_available(page, selectors, timeout=5000)
+        return await self._click_first_available_human(page, selectors, timeout=5000)
 
     async def _detect_rate_limit(self, page) -> bool:
-        """レート制限の警告が出ていないか。"""
         try:
             patterns = [
                 "rate limit",
@@ -640,15 +994,20 @@ class XPublisher:
             return False
 
     async def _open_compose(self, context):
-        """ホームのポスト作成ダイアログを開く。
-
-        /compose/post は仕様変更が起きやすいのでまず home を開いて
-        "ポスト"/"Post" ボタンを押す。だめなら直接 /compose/post にフォールバック。
-        """
+        """home で warmup → TL 閲覧（確率）→ 新規ポストダイアログを開く。"""
         page = await context.new_page()
         await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(2000)
-        opened = await self._click_first_available(
+        await self._jitter_sleep(
+            page,
+            JITTER_PAGE_TRANSITION_MIN,
+            JITTER_PAGE_TRANSITION_MAX,
+            "home_load",
+        )
+        # プリ行動
+        await self._warmup_home(page)
+        await self._browse_timeline(page)
+
+        opened = await self._click_first_available_human(
             page,
             [
                 'a[href="/compose/post"]',
@@ -661,18 +1020,21 @@ class XPublisher:
         )
         if not opened:
             await page.goto(X_COMPOSE_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2000)
+            await self._jitter_sleep(
+                page,
+                JITTER_PAGE_TRANSITION_MIN,
+                JITTER_PAGE_TRANSITION_MAX,
+                "compose_fallback_load",
+            )
         else:
-            await page.wait_for_timeout(1500)
+            await self._jitter_sleep(page, 1.2, 2.5, "compose_open")
         return page
 
     async def _fetch_latest_tweet_id(self, context) -> str | None:
-        """自分のプロフィール最新ツイートの URL 末尾 tweet_id を取得。"""
         page = await context.new_page()
         try:
-            # home 直近の自分のポスト欄から status リンクを拾う
             await page.goto(X_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3500)
+            await self._jitter_sleep(page, 2.5, 4.5, "fetch_latest_load")
             links = page.locator('a[href*="/status/"]')
             count = await links.count()
             for i in range(min(count, 10)):
@@ -692,60 +1054,75 @@ class XPublisher:
                 pass
 
     async def post_thread(self, thread: list[dict]) -> dict:
-        """スレッドを投稿。
+        """スレッドを投稿（ヒューマンライク動作）。
 
         Returns:
-            {"success": bool, "tweet_ids": [...], "error": str|None}
-            tweet_ids はスレッド先頭 tweet の id のみ（後続は返信扱いで個別取得不可）。
+            {"success": bool, "tweet_ids": [...], "error": str|None, "rate_limited": bool}
         """
         if not thread:
             return {"success": False, "tweet_ids": [], "error": "thread is empty"}
 
+        overall_start = time.monotonic()
         context = await self._get_context()
         page = await self._open_compose(context)
         try:
             # 1本目
-            if not await self._fill_textbox(page, thread[0]["text"], 0):
+            if not await self._fill_textbox_human(page, thread[0]["text"], 0):
                 await self._save_screenshot(page, "fill_failed_0")
                 raise RuntimeError("1本目の入力欄が見つかりません（UI変化の可能性）")
 
             # 2本目以降は + で枠追加 → 入力
             for i in range(1, len(thread)):
-                if not await self._add_thread_slot(page):
+                await self._jitter_sleep(
+                    page, JITTER_ADD_SLOT_MIN, JITTER_ADD_SLOT_MAX, "add_slot_before"
+                )
+                if not await self._add_thread_slot_human(page):
                     await self._save_screenshot(page, f"add_slot_failed_{i}")
                     raise RuntimeError(f"スレッド追加ボタン（+）が見つかりません index={i}")
-                await page.wait_for_timeout(400)
-                if not await self._fill_textbox(page, thread[i]["text"], i):
+                await self._jitter_sleep(page, 0.6, 1.4, "add_slot_after")
+                if not await self._fill_textbox_human(page, thread[i]["text"], i):
                     await self._save_screenshot(page, f"fill_failed_{i}")
                     raise RuntimeError(f"index={i} の入力欄が見つかりません")
 
             await self._save_screenshot(page, "pre_post")
 
-            # Post all 押下
-            if not await self._click_post_all(page):
+            # 投稿前の間
+            await self._jitter_sleep(
+                page, JITTER_PRE_SUBMIT_MIN, JITTER_PRE_SUBMIT_MAX, "pre_submit"
+            )
+
+            if not await self._click_post_all_human(page):
                 await self._save_screenshot(page, "post_button_not_found")
                 raise RuntimeError("Post all ボタンが見つかりません")
 
-            await page.wait_for_timeout(5000)
+            await self._jitter_sleep(page, 3.5, 6.5, "after_submit")
 
-            # レート制限チェック
             if await self._detect_rate_limit(page):
                 await self._save_screenshot(page, "rate_limit")
-                _notify(f"⚠️ X レート制限検知、{RATE_LIMIT_WAIT_SEC//60}分後リトライ予定")
+                wait = random.uniform(RATE_LIMIT_WAIT_MIN, RATE_LIMIT_WAIT_MAX)
+                _notify(
+                    f"⚠️ X レート制限検知、{int(wait//60)}分後リトライ予定"
+                )
                 return {
                     "success": False,
                     "tweet_ids": [],
-                    "error": f"rate_limited (wait {RATE_LIMIT_WAIT_SEC}s)",
+                    "error": f"rate_limited (wait {int(wait)}s)",
                     "rate_limited": True,
                 }
 
             await self._save_screenshot(page, "post_success")
 
             tweet_id = await self._fetch_latest_tweet_id(context)
+
+            # ポスト行動
+            await self._post_action_dwell(context)
+
+            total = time.monotonic() - overall_start
+            self._log_timing("post_thread_total", total)
+
             if tweet_id:
-                return {"success": True, "tweet_ids": [tweet_id], "error": None}
-            # 投稿は通ったが tweet_id が拾えなかった
-            return {"success": True, "tweet_ids": [], "error": None}
+                return {"success": True, "tweet_ids": [tweet_id], "error": None, "elapsed_sec": total}
+            return {"success": True, "tweet_ids": [], "error": None, "elapsed_sec": total}
 
         except XSessionError:
             raise
@@ -882,9 +1259,19 @@ def create_thread(
             "error": f"{SESSION_PATH.name} 未作成（scripts/x_auth_init.sh を実行してください）",
         }
 
+    # クールダウン中は投稿スキップ
+    if _in_cooldown():
+        return {
+            **base_response,
+            "success": False,
+            "dry_run": False,
+            "error": "X投稿クールダウン中（連続失敗により 24 時間停止中）",
+        }
+
     try:
         result = post_thread_sync(gen["thread"], headless=config.headless)
     except XSessionError as e:
+        _record_failure(f"session: {e}")
         return {
             **base_response,
             "success": False,
@@ -892,6 +1279,7 @@ def create_thread(
             "error": f"X session error: {e}",
         }
     except Exception as e:
+        _record_failure(f"exception: {e}")
         _notify(
             f"❌ Xスレッド投稿失敗\n"
             f"記事: {article.title}\n"
@@ -905,7 +1293,9 @@ def create_thread(
         }
 
     if not result.get("success"):
-        # レート制限の場合はキューに戻す判定は scheduler 側で実施
+        # レート制限は失敗カウントに含めない（一時的な制限）
+        if not result.get("rate_limited"):
+            _record_failure(result.get("error") or "投稿失敗")
         return {
             **base_response,
             "success": False,
@@ -914,6 +1304,7 @@ def create_thread(
             "error": result.get("error") or "投稿失敗",
         }
 
+    _record_success()
     tweet_ids = result.get("tweet_ids", [])
     first_url = (
         f"https://x.com/i/web/status/{tweet_ids[0]}" if tweet_ids else None
@@ -926,6 +1317,7 @@ def create_thread(
         "first_tweet_url": first_url,
         "posted_at": datetime.now().isoformat(),
         "error": None,
+        "elapsed_sec": result.get("elapsed_sec"),
     }
 
 
@@ -990,6 +1382,45 @@ def pop_due_entries(now: datetime | None = None) -> list[dict]:
         if sched <= now:
             due.append(e)
     return due
+
+
+def apply_schedule_jitter(base: datetime, *, spread_sec: int = SCHEDULE_JITTER_SEC) -> datetime:
+    """投稿予定時刻に ±spread_sec のランダムジッターを乗せる。"""
+    offset = random.randint(-spread_sec, spread_sec)
+    return base + timedelta(seconds=offset)
+
+
+def enforce_min_interval(
+    candidate: datetime,
+    *,
+    min_sec: int = MIN_INTERVAL_BETWEEN_POSTS_SEC,
+) -> datetime:
+    """同一日の既存投稿予定と最低 min_sec 離れるように候補時刻を調整。"""
+    entries = _ensure_file(QUEUE_FILE)
+    same_day = []
+    for e in entries:
+        if e.get("status") not in ("pending", "posted"):
+            continue
+        try:
+            sched = datetime.fromisoformat(e["scheduled_at"])
+        except (KeyError, ValueError):
+            continue
+        if sched.date() == candidate.date():
+            same_day.append(sched)
+    if not same_day:
+        return candidate
+    same_day.sort()
+    result = candidate
+    # 既存のどれかに近すぎれば min_sec 後ろにずらすを繰り返す
+    changed = True
+    while changed:
+        changed = False
+        for sched in same_day:
+            if abs((result - sched).total_seconds()) < min_sec:
+                result = sched + timedelta(seconds=min_sec + random.randint(0, 600))
+                changed = True
+                break
+    return result
 
 
 def list_approval_queue() -> list[dict]:
