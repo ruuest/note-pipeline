@@ -62,6 +62,26 @@ class NotePublisher:
         except Exception:
             pass
 
+    def _notify_cover_issue(self, detail: str) -> None:
+        """見出し画像 cropper UI 変化を Telegram に通知（投稿は続行する旨を併記）。"""
+        try:
+            if TELEGRAM_NOTIFY.exists() and os.access(TELEGRAM_NOTIFY, os.X_OK):
+                msg = (
+                    "⚠ note 見出し画像の確定UIが変化、cover なしで継続\n"
+                    f"詳細: {detail}\n"
+                    "対処: logs/screenshots/cover_stuck_*.png を確認、"
+                    "_upload_cover_image の confirm_selectors 調整が必要"
+                )
+                subprocess.run(
+                    [str(TELEGRAM_NOTIFY), msg],
+                    timeout=10,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
+
     async def _save_debug_screenshot(self, page: Page, tag: str) -> None:
         """セッション検証中の状態スクショ。失敗は無視。"""
         try:
@@ -373,23 +393,119 @@ class NotePublisher:
 
         await page.wait_for_timeout(3000)
 
-        # 3. 確定ボタン（ある場合）
+        # 3. reactEasyCrop 確定フロー
+        #   - cropper モーダル (div.ReactModalPortal 内 div[data-testid="cropper"] 等) が
+        #     残存すると本文 textbox のクリックを吸収して投稿全体が詰む。
+        #   - 対策: ReactModalPortal スコープで確定ボタンを多段 fallback でクリック
+        #           → cropper の detached を明示待機
+        #           → 失敗時は ESC 送信
+        #           → それでも残ったら JS で portal を強制除去 + Telegram 通知
+        #           → 最終的に cover 画像なしで本文投稿続行（return False）
+        CROPPER_SELECTORS = [
+            'div[data-testid="cropper"]',
+            'div.reactEasyCrop_Container',
+            'div.reactEasyCrop_CropArea',
+        ]
+        PORTAL_SELECTOR = 'div.ReactModalPortal'
+
+        async def _cropper_visible() -> bool:
+            for cs in CROPPER_SELECTORS:
+                try:
+                    if await page.locator(cs).count() > 0:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        # 3a. Portal スコープ + 従来セレクタの両方を試行
         confirm_selectors = [
+            f'{PORTAL_SELECTOR} button:has-text("保存")',
+            f'{PORTAL_SELECTOR} button:has-text("画像を設定")',
+            f'{PORTAL_SELECTOR} button:has-text("決定")',
+            f'{PORTAL_SELECTOR} button:has-text("適用")',
+            f'{PORTAL_SELECTOR} button:has-text("この画像を使う")',
+            f'{PORTAL_SELECTOR} button:has-text("この画像を使用")',
+            f'{PORTAL_SELECTOR} button:has-text("完了")',
+            f'{PORTAL_SELECTOR} button:has-text("次へ")',
+            f'{PORTAL_SELECTOR} button:has-text("設定")',
+            f'{PORTAL_SELECTOR} button:has-text("確定")',
+            f'{PORTAL_SELECTOR} button:has-text("反映")',
+            f'{PORTAL_SELECTOR} button:has-text("OK")',
+            f'{PORTAL_SELECTOR} button[type="submit"]',
             'button:has-text("保存")',
+            'button:has-text("画像を設定")',
+            'button:has-text("決定")',
             'button:has-text("適用")',
-            'button:has-text("確定")',
+            'button:has-text("この画像を使う")',
             'button:has-text("この画像を使用")',
             'button:has-text("完了")',
+            'button:has-text("確定")',
         ]
+        clicked_confirm = False
         for sel in confirm_selectors:
             try:
                 loc = page.locator(sel).first
-                if await loc.count() > 0:
+                if await loc.count() > 0 and await loc.is_visible():
                     await loc.click(timeout=3000)
-                    await page.wait_for_timeout(1500)
+                    clicked_confirm = True
+                    print(f"  ✅ cropper 確定クリック: {sel}")
                     break
             except Exception:
                 continue
+
+        # 3b. cropper の消失を待つ（detached 優先、だめなら hidden）
+        cropper_gone = False
+        for cs in CROPPER_SELECTORS:
+            try:
+                await page.wait_for_selector(cs, state="detached", timeout=5000)
+                cropper_gone = True
+                break
+            except Exception:
+                continue
+        if not cropper_gone:
+            cropper_gone = not await _cropper_visible()
+
+        # 3c. 残っていれば ESC で閉じる
+        if not cropper_gone:
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(1000)
+                cropper_gone = not await _cropper_visible()
+                if cropper_gone:
+                    print("  ✅ ESC で cropper 閉鎖")
+            except Exception:
+                pass
+
+        # 3d. それでも残っていれば JS で ReactModalPortal を強制除去
+        if not cropper_gone:
+            try:
+                await page.evaluate(
+                    """() => {
+                        document.querySelectorAll('div.ReactModalPortal').forEach(p => p.remove());
+                    }"""
+                )
+                await page.wait_for_timeout(500)
+                cropper_gone = not await _cropper_visible()
+                if cropper_gone:
+                    print("  ⚠ ReactModalPortal を強制削除（UI変更の疑い）")
+            except Exception:
+                pass
+
+        # 3e. デバッグスクショ + Telegram 通知 + cover なしで続行
+        if not cropper_gone:
+            await self._save_debug_screenshot(page, "cover_stuck")
+            detail = (
+                f"confirm_clicked={clicked_confirm}, "
+                f"cropper 残留、portal 削除も失敗"
+            )
+            self._notify_cover_issue(detail)
+            print(f"  ⚠ cropper モーダルが消えない。cover なしで本文投稿続行: {detail}")
+            return False
+
+        if not clicked_confirm:
+            # 確定ボタンは見つからなかったが cropper は消えた（UI 変更の可能性を記録）
+            await self._save_debug_screenshot(page, "cover_no_confirm")
+            print("  ⚠ 確定ボタン不明だが cropper は閉じた（UI 変更の疑い、通知は出さない）")
 
         print(f"  🖼 見出し画像アップロード完了: {image_path.name}")
         return True
