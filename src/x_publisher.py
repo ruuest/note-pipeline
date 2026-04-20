@@ -915,13 +915,28 @@ class XPublisher:
             pass
 
     # ─── UI 操作 ────────────────────────────────
+    # セレクタは多段 fallback:
+    #   1. data-testid（最安定） → 2. aria-label（日英） → 3. role+属性 → 4. text/placeholder
+    # X は UI を頻繁に変更するため、1つがダメでも次で拾える構造を維持する。
+
     async def _fill_textbox_human(self, page, tweet_text: str, index: int) -> bool:
         """index 番目（0-origin）のツイート本文入力欄にテキストを人間風に入力。"""
         selectors = [
+            # data-testid（最安定）
             'div[role="textbox"][data-testid^="tweetTextarea_"]',
+            f'div[data-testid="tweetTextarea_{index}"]',
+            'div[data-testid^="tweetTextarea_"]',
+            # aria-label（日英両対応、2026-04 X UI）
+            'div[role="textbox"][aria-label*="Post text"]',
+            'div[role="textbox"][aria-label*="Post your reply"]',
             'div[role="textbox"][aria-label*="Post"]',
+            'div[role="textbox"][aria-label*="ポスト本文"]',
+            'div[role="textbox"][aria-label*="ポストする内容"]',
             'div[role="textbox"][aria-label*="ポスト"]',
+            'div[role="textbox"][aria-label*="何か"]',
+            # 汎用 contenteditable
             'div[role="textbox"][contenteditable="true"]',
+            'div[contenteditable="true"][data-text="true"]',
         ]
         textbox = None
         hit_selector = None
@@ -960,24 +975,138 @@ class XPublisher:
 
     async def _add_thread_slot_human(self, page) -> bool:
         selectors = [
+            # data-testid（最安定）
             'button[data-testid="addButton"]',
+            'div[data-testid="addButton"]',
+            '[data-testid="addButton"]',
+            # aria-label（日英）
             'button[aria-label*="Add post"]',
+            'button[aria-label*="Add another post"]',
             'button[aria-label*="ポストを追加"]',
+            'button[aria-label*="投稿を追加"]',
+            'button[aria-label*="Add"]',
+            'div[role="button"][aria-label*="Add post"]',
             'div[role="button"][aria-label*="Add"]',
+            'div[role="button"][aria-label*="追加"]',
         ]
         return await self._click_first_available_human(page, selectors, timeout=3000)
 
     async def _click_post_all_human(self, page) -> bool:
         selectors = [
-            'button[data-testid="tweetButton"]',
+            # data-testid（最安定、送信本体）
             'button[data-testid="tweetButtonInline"]',
+            'button[data-testid="tweetButton"]',
+            'div[data-testid="tweetButtonInline"]',
+            'div[data-testid="tweetButton"]',
+            # aria-label（2026-04 X UI は aria-label に「すべてポスト」「ポスト」を使う）
+            'button[aria-label*="Post all"]',
+            'button[aria-label*="すべてポスト"]',
+            'button[aria-label*="すべて投稿"]',
+            'button[aria-label="Post"]',
+            'button[aria-label="ポスト"]',
+            'button[aria-label="ポストする"]',
+            # text（最後の砦）
             'button:has-text("Post all")',
             'button:has-text("すべてポスト")',
             'button:has-text("すべて投稿")',
+            'button:has-text("ポストする")',
+            'button:has-text("投稿する")',
             'button:has-text("Post")',
             'button:has-text("ポスト")',
         ]
         return await self._click_first_available_human(page, selectors, timeout=5000)
+
+    # Post ボタンを「クリックせず存在確認のみ」するためのヘルパ（test_x_selectors.py 用）
+    POST_ALL_SELECTORS: list[str] = [
+        'button[data-testid="tweetButtonInline"]',
+        'button[data-testid="tweetButton"]',
+        'div[data-testid="tweetButtonInline"]',
+        'div[data-testid="tweetButton"]',
+        'button[aria-label*="Post all"]',
+        'button[aria-label*="すべてポスト"]',
+        'button[aria-label*="すべて投稿"]',
+        'button[aria-label="Post"]',
+        'button[aria-label="ポスト"]',
+        'button[aria-label="ポストする"]',
+        'button:has-text("Post all")',
+        'button:has-text("すべてポスト")',
+        'button:has-text("すべて投稿")',
+        'button:has-text("ポストする")',
+        'button:has-text("投稿する")',
+        'button:has-text("Post")',
+        'button:has-text("ポスト")',
+    ]
+
+    COMPOSE_OPEN_SELECTORS: list[str] = [
+        # data-testid（最安定、X 伝統的に SideNav_NewTweet_Button）
+        'a[data-testid="SideNav_NewTweet_Button"]',
+        'button[data-testid="SideNav_NewTweet_Button"]',
+        '[data-testid="SideNav_NewTweet_Button"]',
+        'a[data-testid="FloatingActionButtons_Tweet_Button"]',
+        '[data-testid="FloatingActionButtons_Tweet_Button"]',
+        # href（レガシー・新UIでも一部残存）
+        'a[href="/compose/post"]',
+        'a[href="/compose/tweet"]',
+        'a[href*="/compose/"]',
+        # aria-label（日英）
+        'a[aria-label="Post"]',
+        'a[aria-label="ポストする"]',
+        'a[aria-label="投稿する"]',
+        'a[aria-label*="Post"]',
+        'a[aria-label*="ポスト"]',
+        'button[aria-label="Post"]',
+        'button[aria-label*="Post"]',
+        'button[aria-label*="ポスト"]',
+        # navigation 配下のリンク
+        'nav[role="navigation"] a[href*="/compose"]',
+        'div[role="navigation"] a[href*="/compose"]',
+    ]
+
+    TWEET_TEXTAREA_SELECTORS: list[str] = [
+        'div[role="textbox"][data-testid^="tweetTextarea_"]',
+        'div[data-testid="tweetTextarea_0"]',
+        'div[data-testid^="tweetTextarea_"]',
+        'div[role="textbox"][aria-label*="Post text"]',
+        'div[role="textbox"][aria-label*="Post"]',
+        'div[role="textbox"][aria-label*="ポスト本文"]',
+        'div[role="textbox"][aria-label*="ポスト"]',
+        'div[role="textbox"][contenteditable="true"]',
+        'div[contenteditable="true"][data-text="true"]',
+    ]
+
+    ADD_SLOT_SELECTORS: list[str] = [
+        'button[data-testid="addButton"]',
+        'div[data-testid="addButton"]',
+        '[data-testid="addButton"]',
+        'button[aria-label*="Add post"]',
+        'button[aria-label*="ポストを追加"]',
+        'button[aria-label*="投稿を追加"]',
+        'button[aria-label*="Add"]',
+        'div[role="button"][aria-label*="Add"]',
+        'div[role="button"][aria-label*="追加"]',
+    ]
+
+    TWEET_ARTICLE_SELECTORS: list[str] = [
+        'article[data-testid="tweet"]',
+        'article[role="article"][data-testid*="tweet"]',
+        'article[role="article"]',
+    ]
+
+    IMAGE_UPLOAD_SELECTORS: list[str] = [
+        'input[data-testid="fileInput"]',
+        'input[type="file"][accept*="image"]',
+        'button[data-testid="attachments"]',
+        'button[aria-label*="Media"]',
+        'button[aria-label*="メディア"]',
+    ]
+
+    MODAL_CLOSE_SELECTORS: list[str] = [
+        'button[data-testid="app-bar-close"]',
+        'button[aria-label="Close"]',
+        'button[aria-label="閉じる"]',
+        'div[role="button"][aria-label="Close"]',
+        'div[role="button"][aria-label="閉じる"]',
+    ]
 
     async def _detect_rate_limit(self, page) -> bool:
         try:
@@ -1009,16 +1138,12 @@ class XPublisher:
 
         opened = await self._click_first_available_human(
             page,
-            [
-                'a[href="/compose/post"]',
-                'a[data-testid="SideNav_NewTweet_Button"]',
-                'button[data-testid="SideNav_NewTweet_Button"]',
-                'a[aria-label*="Post"]',
-                'a[aria-label*="ポスト"]',
-            ],
+            self.COMPOSE_OPEN_SELECTORS,
             timeout=3000,
         )
         if not opened:
+            # サイドバーのボタンが見つからない時は URL 直打ちで compose ダイアログを開く
+            # （2026-04 X UI 変更への保険。テキストエリアは /compose/post でも出る）
             await page.goto(X_COMPOSE_URL, wait_until="domcontentloaded", timeout=60000)
             await self._jitter_sleep(
                 page,
@@ -1053,14 +1178,19 @@ class XPublisher:
             except Exception:
                 pass
 
-    async def post_thread(self, thread: list[dict]) -> dict:
+    async def post_thread(self, thread: list[dict], *, dry_run: bool = False) -> dict:
         """スレッドを投稿（ヒューマンライク動作）。
 
+        Args:
+            thread: ツイート配列
+            dry_run: True の場合、最終の送信クリック直前で return（誤投稿防止）。
+                     テキスト入力・Add 枠追加までは全て実行し、UI フローを検証できる。
+
         Returns:
-            {"success": bool, "tweet_ids": [...], "error": str|None, "rate_limited": bool}
+            {"success": bool, "tweet_ids": [...], "error": str|None, "rate_limited": bool, "dry_run": bool}
         """
         if not thread:
-            return {"success": False, "tweet_ids": [], "error": "thread is empty"}
+            return {"success": False, "tweet_ids": [], "error": "thread is empty", "dry_run": dry_run}
 
         overall_start = time.monotonic()
         context = await self._get_context()
@@ -1090,6 +1220,26 @@ class XPublisher:
             await self._jitter_sleep(
                 page, JITTER_PRE_SUBMIT_MIN, JITTER_PRE_SUBMIT_MAX, "pre_submit"
             )
+
+            # ── dry_run: 送信ボタンの存在だけ検証して return（誤投稿防止）──
+            if dry_run:
+                # Post ボタンが DOM にあるかだけ確認し、絶対にクリックしない
+                post_btn_found = False
+                for sel in self.POST_ALL_SELECTORS:
+                    try:
+                        if await page.locator(sel).first.count() > 0:
+                            post_btn_found = True
+                            break
+                    except Exception:
+                        continue
+                await self._save_screenshot(page, "dry_run_before_submit")
+                return {
+                    "success": True,
+                    "tweet_ids": [],
+                    "error": None,
+                    "dry_run": True,
+                    "post_button_found": post_btn_found,
+                }
 
             if not await self._click_post_all_human(page):
                 await self._save_screenshot(page, "post_button_not_found")
@@ -1138,18 +1288,21 @@ class XPublisher:
             await context.close()
 
 
-async def _post_thread_async(thread: list[dict], headless: bool) -> dict:
+async def _post_thread_async(thread: list[dict], headless: bool, dry_run: bool = False) -> dict:
     publisher = XPublisher(headless=headless)
     await publisher.start()
     try:
-        return await publisher.post_thread(thread)
+        return await publisher.post_thread(thread, dry_run=dry_run)
     finally:
         await publisher.stop()
 
 
-def post_thread_sync(thread: list[dict], *, headless: bool = False) -> dict:
-    """同期ラッパー。scheduler / publisher から呼ぶ。"""
-    return asyncio.run(_post_thread_async(thread, headless))
+def post_thread_sync(thread: list[dict], *, headless: bool = False, dry_run: bool = False) -> dict:
+    """同期ラッパー。scheduler / publisher から呼ぶ。
+
+    dry_run=True の場合、最終の送信クリック直前で return（誤投稿防止）。
+    """
+    return asyncio.run(_post_thread_async(thread, headless, dry_run))
 
 
 # ─────────────────────────────────────────────────────
