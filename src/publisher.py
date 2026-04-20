@@ -91,20 +91,152 @@ class NotePublisher:
         except Exception:
             pass
 
+    async def _auto_login(self) -> BrowserContext:
+        """NOTE_EMAIL / NOTE_PASSWORD が揃っていれば自動ログインして storage_state を保存。
+
+        セキュリティ:
+          - パスワードを print しない / Telegram に送らない
+          - 失敗原因のメッセージにもパスワードを含めない
+          - 2FA 等で login 画面を離れられなかった場合は NoteSessionError を raise
+            （従来通り手動 scripts/note_auth_init.sh にフォールバック）
+        """
+        email = os.environ.get("NOTE_EMAIL", "").strip()
+        password = os.environ.get("NOTE_PASSWORD", "").strip()
+        if not email or not password:
+            return None  # auto_login 不可、呼び出し側で NoteSessionError を raise させる
+
+        print(f"  🔐 note 自動再ログイン開始 (email={email[:3]}***)")
+        context = await self.browser.new_context()
+        page = await context.new_page()
+        try:
+            await page.goto(
+                "https://note.com/login",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            await page.wait_for_timeout(2000)
+
+            email_selectors = [
+                'input[type="email"]',
+                'input[name="email"]',
+                'input[autocomplete="email"]',
+                'input[placeholder*="メール"]',
+            ]
+            password_selectors = [
+                'input[type="password"]',
+                'input[name="password"]',
+                'input[autocomplete="current-password"]',
+            ]
+            filled_email = False
+            for sel in email_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0:
+                        await loc.fill(email, timeout=5000)
+                        filled_email = True
+                        break
+                except Exception:
+                    continue
+            filled_password = False
+            for sel in password_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0:
+                        await loc.fill(password, timeout=5000)
+                        filled_password = True
+                        break
+                except Exception:
+                    continue
+            if not (filled_email and filled_password):
+                await self._save_debug_screenshot(page, "auto_login_form_missing")
+                await page.close()
+                await context.close()
+                self._notify_session_issue("自動ログイン: email/password フォームが見つからない（UI変更？）")
+                raise NoteSessionError(
+                    "note 自動ログイン: ログインフォーム未検出。"
+                    "scripts/note_auth_init.sh で手動再認証してください。"
+                )
+
+            submit_selectors = [
+                'button[type="submit"]',
+                'button:has-text("ログイン")',
+                'button:has-text("メールでログイン")',
+            ]
+            for sel in submit_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        await loc.click(timeout=5000)
+                        break
+                except Exception:
+                    continue
+
+            # ログイン完了を URL 変化で待機（/login から離れる）
+            for _ in range(30):
+                await page.wait_for_timeout(1000)
+                if "/login" not in page.url:
+                    break
+            if "/login" in page.url:
+                await self._save_debug_screenshot(page, "auto_login_stuck")
+                await page.close()
+                await context.close()
+                self._notify_session_issue(
+                    "自動ログイン失敗（パスワード誤り or 2FA 要求）。手動再認証が必要"
+                )
+                raise NoteSessionError(
+                    "note 自動ログイン失敗。"
+                    "scripts/note_auth_init.sh で手動再認証してください。"
+                )
+
+            # storage_state を保存
+            await context.storage_state(path=str(SESSION_PATH))
+            await page.close()
+            print("  ✅ note 自動ログイン成功、セッション保存")
+            return context
+        except NoteSessionError:
+            raise
+        except PlaywrightTimeoutError as e:
+            await self._save_debug_screenshot(page, "auto_login_timeout")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            print(f"  ⚠ 自動ログイン Timeout: {e}")
+            raise
+        except Exception as e:
+            await self._save_debug_screenshot(page, "auto_login_error")
+            try:
+                await page.close()
+            except Exception:
+                pass
+            await context.close()
+            # e の文字列はエラー情報のみ（パスワードを扱わない箇所の例外）
+            print(f"  ⚠ 自動ログイン不明エラー: {type(e).__name__}")
+            raise
+
     async def _get_context(self) -> BrowserContext:
         """保存済セッションから BrowserContext を復元する。
 
         方針:
-          - Session ファイルが無い / 明示的に期限切れ → NoteSessionError を raise
-            し Telegram 通知。cron で headless=False の手動ログインは実用的でないため、
-            再認証は scripts/note_auth_init.sh で別途明示的に行う運用とする。
+          - Session ファイルが無い / 明示的に期限切れ:
+              1. NOTE_EMAIL/NOTE_PASSWORD が両方 env にあれば _auto_login() で自動再取得
+              2. 無ければ NoteSessionError + Telegram 通知（従来通り手動 auth_init に誘導）
           - Timeout / ネットワークエラー → session を削除せず例外を伝搬
             （一時的な瞬断でセッションを殺さないため）。
         """
         if not SESSION_PATH.exists():
-            self._notify_session_issue(f"{SESSION_PATH.name} が存在しない（未ログイン）")
+            # まず自動ログインを試行
+            ctx = await self._auto_login()
+            if ctx is not None:
+                return ctx
+            self._notify_session_issue(
+                f"{SESSION_PATH.name} が存在しない（未ログイン、NOTE_EMAIL/PASSWORD 未設定）"
+            )
             raise NoteSessionError(
-                f"{SESSION_PATH} が存在しません。scripts/note_auth_init.sh で再認証してください。"
+                f"{SESSION_PATH} が存在しません。"
+                ".env に NOTE_EMAIL/NOTE_PASSWORD を設定するか "
+                "scripts/note_auth_init.sh を実行してください。"
             )
 
         context = await self.browser.new_context(storage_state=str(SESSION_PATH))
@@ -123,9 +255,16 @@ class NotePublisher:
                 await page.close()
                 await context.close()
                 SESSION_PATH.unlink(missing_ok=True)
-                self._notify_session_issue("dashboard 遷移で /login にリダイレクトされた")
+                # 自動ログインを試行
+                ctx = await self._auto_login()
+                if ctx is not None:
+                    return ctx
+                self._notify_session_issue(
+                    "dashboard で /login リダイレクト、NOTE_EMAIL/PASSWORD も未設定"
+                )
                 raise NoteSessionError(
                     "note セッションが期限切れです。"
+                    ".env に NOTE_EMAIL/NOTE_PASSWORD を設定するか "
                     "scripts/note_auth_init.sh で再認証してください。"
                 )
             await page.close()
