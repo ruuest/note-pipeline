@@ -64,7 +64,14 @@ class NotePublisher:
         await page.close()
         return context
 
-    async def publish(self, article: Article) -> PostResult:
+    async def publish(self, article: Article, dry_run: bool = False) -> PostResult:
+        """note へ投稿する。
+
+        Args:
+            article: 投稿する記事（image_path があれば見出し画像としてアップロード）
+            dry_run: True の場合、「公開に進む」以降のボタンは押さず
+                     スクショのみで返す。live セッションを汚さずにUIを検証したい時に使う。
+        """
         context = await self._get_context()
         page = await context.new_page()
 
@@ -92,6 +99,11 @@ class NotePublisher:
             title_input = page.locator('textarea[placeholder="記事タイトル"]')
             await title_input.fill(article.title)
             await page.wait_for_timeout(500)
+
+            # 見出し画像（アイキャッチ）をアップロード。失敗しても投稿は続行。
+            if article.image_path:
+                await self._upload_cover_image(page, Path(article.image_path))
+                await page.wait_for_timeout(1000)
 
             # 本文入力 - contenteditable div[role=textbox]
             body_area = page.locator('div[role="textbox"][contenteditable="true"]')
@@ -157,6 +169,16 @@ class NotePublisher:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             await page.screenshot(path=str(SCREENSHOTS_DIR / f"pre_publish_{timestamp}.png"))
 
+            # ドライランモード: 公開ボタンは押さず pre_publish スクショのみで返す
+            if dry_run:
+                print(f"  🧪 DRY RUN: 公開をスキップ（スクショ: pre_publish_{timestamp}.png）")
+                return PostResult(
+                    article=article,
+                    success=True,
+                    note_url=f"dry-run://{page.url}",
+                    posted_at=datetime.now(),
+                )
+
             # 「公開に進む」ボタンをクリック
             await page.locator('button:has-text("公開に進む")').click()
             await page.wait_for_timeout(3000)
@@ -217,17 +239,103 @@ class NotePublisher:
             await page.close()
             await context.close()
 
+    async def _upload_cover_image(self, page: Page, image_path: Path) -> bool:
+        """note エディタに見出し画像（アイキャッチ）をアップロード。
 
-def publish_article(article: Article) -> PostResult:
-    """同期ラッパー"""
-    return asyncio.run(_publish(article))
+        失敗しても本文投稿は続行できるよう、例外は内部で握りつぶして False を返す。
+        note の UI は変動するため、ボタン・確定 UI は複数セレクタで順次試す。
+        """
+        if not image_path or not image_path.exists():
+            print(f"  ⚠ 画像ファイルが存在しない: {image_path}")
+            return False
+
+        # 1. 「見出し画像を追加」ボタン候補（note UI 変更に備え多段 fallback）
+        trigger_selectors = [
+            'button[aria-label*="見出し画像"]',
+            'button[aria-label*="画像を追加"]',
+            'button:has-text("見出し画像を追加")',
+            'button:has-text("画像を追加")',
+            'button[data-testid*="cover"]',
+            'button[data-testid*="eyecatch"]',
+        ]
+        clicked = False
+        for sel in trigger_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=3000)
+                    clicked = True
+                    print(f"  🖼 見出し画像ボタンクリック: {sel}")
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            print("  ⚠ 見出し画像ボタンが見つからない（note UI変更の可能性、投稿は続行）")
+            return False
+
+        await page.wait_for_timeout(1500)
+
+        # 2. ファイル選択: まず input[type=file] 直接投入を試み、だめなら file_chooser ルート
+        try:
+            file_input = page.locator('input[type="file"]').first
+            if await file_input.count() > 0:
+                await file_input.set_input_files(str(image_path))
+            else:
+                async with page.expect_file_chooser(timeout=6000) as fc_info:
+                    upload_selectors = [
+                        'button:has-text("画像をアップロード")',
+                        'button:has-text("画像を選択")',
+                        'button:has-text("アップロード")',
+                        'label:has-text("画像")',
+                    ]
+                    for sel in upload_selectors:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.count() > 0:
+                                await loc.click(timeout=3000)
+                                break
+                        except Exception:
+                            continue
+                file_chooser = await fc_info.value
+                await file_chooser.set_files(str(image_path))
+        except Exception as e:
+            print(f"  ⚠ 画像ファイル投入失敗（投稿続行）: {e}")
+            return False
+
+        await page.wait_for_timeout(3000)
+
+        # 3. 確定ボタン（ある場合）
+        confirm_selectors = [
+            'button:has-text("保存")',
+            'button:has-text("適用")',
+            'button:has-text("確定")',
+            'button:has-text("この画像を使用")',
+            'button:has-text("完了")',
+        ]
+        for sel in confirm_selectors:
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() > 0:
+                    await loc.click(timeout=3000)
+                    await page.wait_for_timeout(1500)
+                    break
+            except Exception:
+                continue
+
+        print(f"  🖼 見出し画像アップロード完了: {image_path.name}")
+        return True
 
 
-async def _publish(article: Article) -> PostResult:
+def publish_article(article: Article, dry_run: bool = False) -> PostResult:
+    """同期ラッパー。dry_run=True で公開ボタンをスキップ。"""
+    return asyncio.run(_publish(article, dry_run=dry_run))
+
+
+async def _publish(article: Article, dry_run: bool = False) -> PostResult:
     publisher = NotePublisher()
     await publisher.start()
     try:
-        result = await publisher.publish(article)
+        result = await publisher.publish(article, dry_run=dry_run)
         return result
     finally:
         await publisher.stop()
