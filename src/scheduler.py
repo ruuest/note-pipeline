@@ -12,7 +12,7 @@ LOG_DIR = BASE_DIR / "logs"
 MAX_DAILY_POSTS = int(os.environ.get("MAX_DAILY_POSTS", "3"))
 MIN_INTERVAL_MINUTES = int(os.environ.get("MIN_INTERVAL_MINUTES", "30"))
 # 同カテゴリ連投ブロック: 直近24hで同カテゴリをこの本数以上投稿していたらブロック
-SAME_CATEGORY_MAX_24H = int(os.environ.get("SAME_CATEGORY_MAX_24H", "2"))
+SAME_CATEGORY_MAX_24H = int(os.environ.get("SAME_CATEGORY_MAX_24H", "3"))
 
 
 def _log_path(d: date | None = None) -> Path:
