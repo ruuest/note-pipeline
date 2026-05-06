@@ -7,6 +7,8 @@ import json
 import os
 import re
 
+from src.api_retry import call_with_retry
+
 # Gemini優先、GOOGLE_API_KEY未設定時はAnthropicフォールバック
 _USE_GEMINI = bool(os.environ.get("GOOGLE_API_KEY"))
 if _USE_GEMINI:
@@ -105,13 +107,16 @@ def generate_title_candidates(
 ]
 対象type: {type_examples}"""
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            max_output_tokens=1024,
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                max_output_tokens=1024,
+            ),
         ),
+        label="gemini.title_candidates",
     )
     raw = response.text
     candidates = _extract_json(raw)
@@ -161,13 +166,16 @@ def score_titles(
   ...
 ]"""
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            max_output_tokens=1024,
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                max_output_tokens=1024,
+            ),
         ),
+        label="gemini.title_scoring",
     )
     raw = response.text
     scores = _extract_json(raw)

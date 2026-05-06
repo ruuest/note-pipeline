@@ -100,10 +100,9 @@ def validate_article(article: Article) -> ValidationResult:
             f"ハッシュタグが不足しています ({hashtag_count}個 < {MIN_HASHTAGS})"
         )
 
-    if not has_image_marker(body):
-        result.warnings.append(
-            "画像が未挿入です（noteのアイキャッチ/本文画像は現状手動/自動未対応）"
-        )
+    has_thumbnail = bool(getattr(article, "image_path", None))
+    if not has_thumbnail and not has_image_marker(body):
+        result.warnings.append("見出し画像も本文画像も未設定です")
 
     if not cta_url_is_embeddable(body):
         result.errors.append(

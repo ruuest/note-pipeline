@@ -456,12 +456,17 @@ def _parse_thread_json(raw: str) -> list[dict]:
 def _call_claude(input_data: dict, *, api_key: str, model: str = CLAUDE_MODEL) -> list[dict]:
     import anthropic
 
+    from src.api_retry import call_with_retry
+
     client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=model,
-        max_tokens=2000,
-        system=load_system_prompt(),
-        messages=[{"role": "user", "content": _build_user_prompt(input_data)}],
+    response = call_with_retry(
+        lambda: client.messages.create(
+            model=model,
+            max_tokens=2000,
+            system=load_system_prompt(),
+            messages=[{"role": "user", "content": _build_user_prompt(input_data)}],
+        ),
+        label="anthropic.x_thread",
     )
     raw = "".join(b.text for b in response.content if hasattr(b, "text"))
     return _parse_thread_json(raw)

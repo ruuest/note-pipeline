@@ -441,28 +441,42 @@ class NotePublisher:
             # 投稿URLを取得
             note_url = page.url
             if "/kaitori_nv_cloud/n/" not in note_url:
-                # 投稿後のページURLが /n/ を含まないケース → 公開API経由で最新記事URLを取得
-                # （旧実装は a[href*="/n/"].first を使ったが運営記事(/info/n/...)を拾う事故があった）
+                # 投稿後のページURLが /n/ を含まないケース → 公開API経由でタイトル一致記事URLを取得
+                # （旧実装は contents[0] を使ったが、公開直後はAPI反映に遅延があり
+                #  古い記事URLを返してしまう事故があった → タイトル一致で同定する）
                 import httpx
 
-                try:
-                    api_url = (
-                        "https://note.com/api/v2/creators/kaitori_nv_cloud/contents"
-                        "?kind=note&page=1"
-                    )
-                    async with httpx.AsyncClient(timeout=10) as client:
-                        resp = await client.get(
-                            api_url,
-                            headers={"User-Agent": "Mozilla/5.0"},
-                        )
-                        data = resp.json()
-                        contents = data.get("data", {}).get("contents", [])
-                        if contents:
-                            api_url_first = contents[0].get("noteUrl")
-                            if api_url_first:
-                                note_url = api_url_first
-                except Exception:
-                    pass
+                api_url = (
+                    "https://note.com/api/v2/creators/kaitori_nv_cloud/contents"
+                    "?kind=note&page=1"
+                )
+                target_title = (article.title or "").strip()
+                resolved: str | None = None
+                async with httpx.AsyncClient(timeout=10) as client:
+                    for attempt in range(6):  # 最大 ~30s 待機（API反映遅延吸収）
+                        try:
+                            resp = await client.get(
+                                api_url,
+                                headers={"User-Agent": "Mozilla/5.0"},
+                            )
+                            data = resp.json()
+                            contents = data.get("data", {}).get("contents", [])
+                            for item in contents:
+                                if (item.get("name") or "").strip() == target_title:
+                                    resolved = item.get("noteUrl")
+                                    break
+                            if resolved:
+                                break
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(5000)
+                if resolved:
+                    note_url = resolved
+                else:
+                    # フォールバック: タイトル一致で見つからなくても先頭は使わず、
+                    # 失敗扱いにせず page.url（編集ダッシュボード等）をそのまま残す。
+                    # 同一URL誤記録より「URL不明」の方が後から特定しやすい
+                    print(f"  ⚠ 投稿URLをAPIで同定できず: title='{target_title}'")
 
             await page.screenshot(path=str(SCREENSHOTS_DIR / f"post_publish_{timestamp}.png"))
 
