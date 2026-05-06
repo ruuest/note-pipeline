@@ -70,6 +70,75 @@ def format_hashtag_block(tags: list[str]) -> str:
     return "\n\n" + " ".join(f"#{t}" for t in tags) + "\n"
 
 
+def build_related_links_block(current_keyword: str, *, n: int = 3) -> str:
+    """過去の高PV記事から関連記事ブロックを組み立てる。
+
+    Why: フォロワーゼロでも note 内動線(関連記事クリック)で滞在時間が伸びれば
+    アルゴリズム評価が上がる。`logs/note_metrics_snapshot.json` の views 降順 TOP から
+    現在のメインキーワードと被らない記事を3本選ぶ。snapshot が無ければ空文字を返す
+    (静かに無効化)。
+    """
+    snapshot_path = BASE_DIR / "logs" / "note_metrics_snapshot.json"
+    if not snapshot_path.exists():
+        return ""
+    try:
+        rows = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    cur_kw = (current_keyword or "").split()[0]
+    candidates = [
+        r for r in rows
+        if r.get("views", 0) >= 3
+        and r.get("url")
+        and r.get("title")
+        and (cur_kw not in r.get("title", "") if cur_kw else True)
+    ]
+    candidates.sort(key=lambda r: r.get("views", 0), reverse=True)
+    picks = candidates[:n]
+    if not picks:
+        return ""
+    lines = ["", "【あわせて読みたい】"]
+    for p in picks:
+        lines.append(f"・{p['title']}")
+        lines.append(p["url"])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def normalize_title(title: str, max_len: int = 38) -> str:
+    """note タイトルを検索CTRが上がる形に正規化する。
+
+    実績(2026-05-06測定): ｜あり 平均6.1PV vs なし 8.1PV、30字以下 9.5PV vs 31字+ 7.2PV。
+    Why: 飾り記号(｜・/)で副題を足すクセが SEO/タイトル競合に弱い。短く具体に。
+    """
+    t = title.strip().strip("#").strip()
+    # 末尾の連結副題を切り落とす(｜の後ろが冗長な場合)
+    for sep in ["｜", "|", "／", "/"]:
+        if sep in t:
+            head, _, tail = t.partition(sep)
+            head = head.strip()
+            tail = tail.strip()
+            # 主タイトルが10字以上あれば副題を捨てる
+            if len(head) >= 10:
+                t = head
+                break
+            # 副題のほうが本体っぽいケース(主が短すぎ)は副題側を採用
+            if len(tail) >= 10 and len(tail) > len(head):
+                t = tail
+                break
+    # 連続スペース・全角スペース整理
+    t = re.sub(r"[\s　]+", " ", t).strip()
+    # 文字数オーバー時は接続詞前で切る(無理なら強制切り詰め+末尾調整なし)
+    if len(t) > max_len:
+        # 最後の読点/句点/スペース/カンマで切る
+        cut = max(t.rfind(c, 0, max_len) for c in "、。 ,") if t else -1
+        if cut >= 15:
+            t = t[:cut].rstrip("、。 ,")
+        else:
+            t = t[:max_len]
+    return t
+
+
 def normalize_markdown_artifacts(text: str) -> str:
     """LLM出力に紛れる生Markdown(見出し/強調/箇条書き)をnote向け表記に正規化。
     Why: noteエディタにそのまま流すと「## まとめ」「### デメリット」が本文に
@@ -243,8 +312,14 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
         except Exception as e:
             print(f"  ⚠ タイトル最適化失敗、元タイトルを使用: {e}")
 
+    # タイトル正規化（｜削除・38字以内）
+    title = normalize_title(title)
+
     # 生Markdown見出し/箇条書きを正規化（## → 【】、- → ・）
     body = normalize_markdown_artifacts(body)
+
+    # 関連記事ブロック（snapshot がある時のみ。フォロワーゼロでも滞在時間で稼ぐ）
+    body = body + build_related_links_block(keyword.get("main_keyword", ""))
 
     # CTA付与（テーマ別cta_mapから選択。cta_blockフォールバックあり）
     cta_map = templates_data.get("cta_map", {})
@@ -256,6 +331,10 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
         # 旧cta_blockへのフォールバック
         cta = templates_data.get("cta_block", "").format(lp_url=templates_data["lp_url"])
     body = body + cta
+    # フォロー誘導 (cta 末尾に共通付与)
+    cta_suffix = templates_data.get("cta_suffix", "")
+    if cta_suffix:
+        body = body + cta_suffix
 
     # ハッシュタグ付与（note本文末尾、タグ面/特集面露出のためSEO強化）
     tags_config = load_tags_config()
@@ -330,7 +409,7 @@ def load_draft(filepath: Path) -> Article:
         template_id=data["template_id"],
         generated_at=datetime.fromisoformat(data["generated_at"]),
         image_path=Path(image_path_raw) if image_path_raw else None,
-        x_share_mode=data.get("x_share_mode", "none"),
+        x_share_mode=data.get("x_share_mode", "scheduled"),
         x_scheduled_at=(
             datetime.fromisoformat(x_scheduled_raw) if x_scheduled_raw else None
         ),
