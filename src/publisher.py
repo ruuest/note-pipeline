@@ -427,6 +427,18 @@ class NotePublisher:
                     posted_at=datetime.now(),
                 )
 
+            # 公開直前にタイトルを再確認・空なら再入力（画像アップロードや本文挿入で
+            # note の React state にタイトルが残らないケースを救う）
+            title_input = page.locator('textarea[placeholder="記事タイトル"]')
+            try:
+                current_title = (await title_input.input_value()).strip()
+            except Exception:
+                current_title = ""
+            if current_title != article.title.strip():
+                print(f"  ⚠ タイトル欄がズレているので再入力: '{current_title[:30]}' → '{article.title[:30]}'")
+                await title_input.fill(article.title)
+                await page.wait_for_timeout(800)
+
             # 「公開に進む」ボタンをクリック
             await page.locator('button:has-text("公開に進む")').click()
             await page.wait_for_timeout(3000)
