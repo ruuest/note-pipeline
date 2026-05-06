@@ -18,6 +18,7 @@ else:
 
 from src.models import Article
 from src import title_optimizer
+from src.api_retry import call_with_retry
 from src.thumbnail import generate_thumbnail
 
 logger = logging.getLogger(__name__)
@@ -195,22 +196,28 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
 
     if _USE_GEMINI:
         client = genai.Client()
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=template["system_prompt"],
-                max_output_tokens=4096,
+        response = call_with_retry(
+            lambda: client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=template["system_prompt"],
+                    max_output_tokens=4096,
+                ),
             ),
+            label="gemini.generate_content",
         )
         raw_text = response.text
     else:
         client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=4096,
-            system=template["system_prompt"],
-            messages=[{"role": "user", "content": user_prompt}],
+        response = call_with_retry(
+            lambda: client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=4096,
+                system=template["system_prompt"],
+                messages=[{"role": "user", "content": user_prompt}],
+            ),
+            label="anthropic.messages.create",
         )
         raw_text = response.content[0].text
 
