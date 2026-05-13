@@ -114,6 +114,62 @@ bash scripts/note_daily_summary.sh    # 日次集計
 
 ---
 
+## 全 URL 一括削除 (strip_all_urls / profile_strip_urls)
+
+NV CLOUD 他社販売見送りに伴い、note 記事本文 + プロフィール bio から全 URL を撤去するパイプライン (2026-05-12 天皇要件)。**3 段階フロー厳守**: dry-run → 凌佳承認 → execute。
+
+### コマンド
+
+```bash
+# 1. 本文 — dry-run (note サーバーに影響なし、削除対象を CLI 出力)
+uv run python -m src.strip_all_urls --user kaitori_nv_cloud --dry-run --limit 2
+
+# 2. 本文 — execute (凌佳承認後にのみ実行)
+#    レート制限: 30 分間隔 + 1 日 3 本上限を内部で強制
+uv run python -m src.strip_all_urls --user kaitori_nv_cloud --execute
+
+# 3. プロフィール bio — dry-run
+uv run python -m setup.profile_strip_urls --dry-run
+
+# 4. プロフィール bio — execute (凌佳承認後にのみ)
+uv run python -m setup.profile_strip_urls --execute
+```
+
+`--only <key>` で特定 1 記事のみ、`--limit N` で先頭 N 件のみ処理可能。
+
+### レート制限 (memory: feedback_note_posting_limits 準拠)
+
+| 項目 | 値 |
+|---|---|
+| 連続更新間隔 | 30 分 (`MIN_INTERVAL_SECONDS`) |
+| 1 日上限 | 3 本 (`DAILY_LIMIT`) |
+| 状態永続化 | `.strip_state.json` (`{date, count, last_run_ts}`) |
+| 日付変更 | カウンタ自動リセット |
+| `--ignore-rate-limit` | デバッグ専用、本実行非推奨 |
+
+### バックアップ
+
+- 本文: 各記事の元 HTML を `logs/strip_url_backup_<key>_<timestamp>.html`
+- プロフィール: 元 bio を `logs/profile_strip_backup_<timestamp>.html`
+- 実行ログ: `logs/strip_url_run_<date>.log` (dry-run でも追記)
+- スクリーンショット: `logs/strip_<key>_before.png` / `_dialog.png` / `_after_input.png`
+
+### 異常時 rollback
+
+1. 失敗時は **即停止** (次記事に進まない)
+2. 該当 key のバックアップ HTML を確認 (`logs/strip_url_backup_<key>_*.html`)
+3. note エディタで該当記事を開き、バックアップ内容を手動で貼り直す
+4. 大量失敗時は `--dry-run` で再度状態確認 → 個別 `--only <key>` で再試行
+
+### 安全機構
+
+- `--execute` と `--dry-run` 併用は拒否 (`SystemExit(2)`)
+- 各記事処理前にレート制限再チェック (1 日上限到達 / 30 分未満で即中断)
+- 編集後に再 fetch して URL 残存検証、>0 なら即 `SystemExit(1)`
+- Playwright 例外は即 `SystemExit(1)`、次の記事に進まない
+
+---
+
 ## X スレッド自動投稿（src/x_publisher.py）
 
 note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッドを生成し、
