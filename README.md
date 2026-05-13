@@ -170,6 +170,36 @@ uv run python -m setup.profile_strip_urls --execute
 
 ---
 
+## 自動投稿パイプラインの URL 自動撤去 (Phase 4)
+
+NV CLOUD 自社運用専用化に伴い、**新規生成パイプライン (generator → publisher) でも URL を一切含めない**。
+記事生成時 (`generator.generate_article`) と note 投稿直前 (`publisher.publish`) の **二重で URL を strip** する。
+
+### 実装
+
+| 段階 | ファイル | 挙動 |
+|---|---|---|
+| 共通モジュール | `src/utils/url_stripper.py` | `strip_urls_from_html()` / `strip_urls_from_text()` を提供 |
+| 生成時 | `src/generator.py` | hashtag 付与後に `strip_urls_from_text(body)` で URL 撤去、draft JSON にも URL を残さない |
+| 投稿直前 | `src/publisher.py` | `publish()` 内で body を再 strip (二重防御)。手で編集された draft や旧 draft 由来の URL を最終除去 |
+| 既存記事リライト | `src/strip_all_urls.py` | 共通モジュールから `strip_urls_from_html` を import (Phase 1 のロジックは共通化で温存) |
+
+### 撤去対象 URL
+
+- NV CLOUD LP: `https://nvcloud-lp.pages.dev/`
+- 本番アプリ: `https://app.northvalue-assets.net/`
+- X SNS: `https://x.com/...`
+- note 内部リンク: `https://note.com/kaitori_nv_cloud/n/...` (関連記事ブロック)
+- その他全 LP / 営業 URL (anchor / linkcard / bare URL すべて)
+
+### テスト
+
+```bash
+.venv/bin/python -m pytest tests/test_url_stripper.py -v
+```
+
+---
+
 ## X スレッド自動投稿（src/x_publisher.py）
 
 note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッドを生成し、

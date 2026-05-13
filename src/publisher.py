@@ -14,6 +14,7 @@ from playwright.async_api import (
 )
 
 from src.models import Article, PostResult
+from src.utils.url_stripper import strip_urls_from_text
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SESSION_PATH = BASE_DIR / ".note-session.json"
@@ -358,9 +359,11 @@ class NotePublisher:
             await body_area.click()
             await page.wait_for_timeout(500)
 
-            # 本文をexecCommandで一括挿入（段落ごと）。
-            # NOTE: URLの自動リンクカード化は execCommand では発火しない既知問題あり。
-            # 当面はプレーンテキストでURLを挿入し、note側のサーバ側変換に委ねる。
+            # Phase 4 二重防御: 投稿直前に URL を最終 strip。generator 側でも一度消しているが、
+            # ここでも消すことで draft が手で編集された場合や旧 draft 由来の URL を確実に除去する。
+            body_final, _stripped = strip_urls_from_text(article.body)
+
+            # 本文をexecCommandで一括挿入（段落ごと）。URL は事前 strip 済のためリンクカード化処理は不要。
             await page.evaluate("""(text) => {
                 const editor = document.querySelector('div[role="textbox"][contenteditable="true"]');
                 if (editor) {
@@ -377,40 +380,9 @@ class NotePublisher:
                         }
                     });
                 }
-            }""", article.body)
+            }""", body_final)
 
             await page.wait_for_timeout(1500)
-
-            # 本文中のCTA URLを <a> リンクに昇格させる（noteのリンクカード生成のヒント）。
-            # JS走査で URL を含むテキストノードを見つけ、selection→execCommand('createLink')で
-            # アンカー化する。失敗してもプレーンテキストで残るので安全。
-            target_url = "https://nvcloud-lp.pages.dev/"
-            try:
-                await page.evaluate(
-                    """(url) => {
-                        const editor = document.querySelector('div[role="textbox"][contenteditable="true"]');
-                        if (!editor) return;
-                        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-                        let node;
-                        while ((node = walker.nextNode())) {
-                            const idx = node.textContent.indexOf(url);
-                            if (idx === -1) continue;
-                            const range = document.createRange();
-                            range.setStart(node, idx);
-                            range.setEnd(node, idx + url.length);
-                            const sel = window.getSelection();
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                            document.execCommand('createLink', false, url);
-                            sel.removeAllRanges();
-                            break;
-                        }
-                    }""",
-                    target_url,
-                )
-                await page.wait_for_timeout(1500)
-            except Exception:
-                pass
 
             # スクリーンショット（デバッグ用）
             SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
