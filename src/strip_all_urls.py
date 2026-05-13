@@ -47,7 +47,8 @@ LOGS_DIR = BASE_DIR / "logs"
 STATE_PATH = BASE_DIR / ".strip_state.json"
 
 # レート制限設定 (memory: feedback_note_posting_limits)
-DAILY_LIMIT = 3
+# 2026-05-13 11:18 天皇承認で 1 日 3 → 10 本に緩和 (約 7 日で 71 記事完了試算)
+DAILY_LIMIT = 10
 MIN_INTERVAL_SECONDS = 30 * 60  # 30 分
 
 # ---------- URL 検出/削除パターン ----------
