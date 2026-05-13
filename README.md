@@ -114,6 +114,92 @@ bash scripts/note_daily_summary.sh    # 日次集計
 
 ---
 
+## 全 URL 一括削除 (strip_all_urls / profile_strip_urls)
+
+NV CLOUD 他社販売見送りに伴い、note 記事本文 + プロフィール bio から全 URL を撤去するパイプライン (2026-05-12 天皇要件)。**3 段階フロー厳守**: dry-run → 凌佳承認 → execute。
+
+### コマンド
+
+```bash
+# 1. 本文 — dry-run (note サーバーに影響なし、削除対象を CLI 出力)
+uv run python -m src.strip_all_urls --user kaitori_nv_cloud --dry-run --limit 2
+
+# 2. 本文 — execute (凌佳承認後にのみ実行)
+#    レート制限: 30 分間隔 + 1 日 3 本上限を内部で強制
+uv run python -m src.strip_all_urls --user kaitori_nv_cloud --execute
+
+# 3. プロフィール bio — dry-run
+uv run python -m setup.profile_strip_urls --dry-run
+
+# 4. プロフィール bio — execute (凌佳承認後にのみ)
+uv run python -m setup.profile_strip_urls --execute
+```
+
+`--only <key>` で特定 1 記事のみ、`--limit N` で先頭 N 件のみ処理可能。
+
+### レート制限 (memory: feedback_note_posting_limits 準拠)
+
+| 項目 | 値 |
+|---|---|
+| 連続更新間隔 | 30 分 (`MIN_INTERVAL_SECONDS`) |
+| 1 日上限 | 3 本 (`DAILY_LIMIT`) |
+| 状態永続化 | `.strip_state.json` (`{date, count, last_run_ts}`) |
+| 日付変更 | カウンタ自動リセット |
+| `--ignore-rate-limit` | デバッグ専用、本実行非推奨 |
+
+### バックアップ
+
+- 本文: 各記事の元 HTML を `logs/strip_url_backup_<key>_<timestamp>.html`
+- プロフィール: 元 bio を `logs/profile_strip_backup_<timestamp>.html`
+- 実行ログ: `logs/strip_url_run_<date>.log` (dry-run でも追記)
+- スクリーンショット: `logs/strip_<key>_before.png` / `_dialog.png` / `_after_input.png`
+
+### 異常時 rollback
+
+1. 失敗時は **即停止** (次記事に進まない)
+2. 該当 key のバックアップ HTML を確認 (`logs/strip_url_backup_<key>_*.html`)
+3. note エディタで該当記事を開き、バックアップ内容を手動で貼り直す
+4. 大量失敗時は `--dry-run` で再度状態確認 → 個別 `--only <key>` で再試行
+
+### 安全機構
+
+- `--execute` と `--dry-run` 併用は拒否 (`SystemExit(2)`)
+- 各記事処理前にレート制限再チェック (1 日上限到達 / 30 分未満で即中断)
+- 編集後に再 fetch して URL 残存検証、>0 なら即 `SystemExit(1)`
+- Playwright 例外は即 `SystemExit(1)`、次の記事に進まない
+
+---
+
+## 自動投稿パイプラインの URL 自動撤去 (Phase 4)
+
+NV CLOUD 自社運用専用化に伴い、**新規生成パイプライン (generator → publisher) でも URL を一切含めない**。
+記事生成時 (`generator.generate_article`) と note 投稿直前 (`publisher.publish`) の **二重で URL を strip** する。
+
+### 実装
+
+| 段階 | ファイル | 挙動 |
+|---|---|---|
+| 共通モジュール | `src/utils/url_stripper.py` | `strip_urls_from_html()` / `strip_urls_from_text()` を提供 |
+| 生成時 | `src/generator.py` | hashtag 付与後に `strip_urls_from_text(body)` で URL 撤去、draft JSON にも URL を残さない |
+| 投稿直前 | `src/publisher.py` | `publish()` 内で body を再 strip (二重防御)。手で編集された draft や旧 draft 由来の URL を最終除去 |
+| 既存記事リライト | `src/strip_all_urls.py` | 共通モジュールから `strip_urls_from_html` を import (Phase 1 のロジックは共通化で温存) |
+
+### 撤去対象 URL
+
+- NV CLOUD LP: `https://nvcloud-lp.pages.dev/`
+- 本番アプリ: `https://app.northvalue-assets.net/`
+- X SNS: `https://x.com/...`
+- note 内部リンク: `https://note.com/kaitori_nv_cloud/n/...` (関連記事ブロック)
+- その他全 LP / 営業 URL (anchor / linkcard / bare URL すべて)
+
+### テスト
+
+```bash
+.venv/bin/python -m pytest tests/test_url_stripper.py -v
+```
+
+---
+
 ## X スレッド自動投稿（src/x_publisher.py）
 
 note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッドを生成し、
