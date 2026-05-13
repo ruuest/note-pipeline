@@ -23,6 +23,7 @@ from src.strip_all_urls import (
     record_run,
     save_state,
     strip_all_urls_from_html,
+    stripped_html_to_editor_text,
 )
 
 
@@ -217,3 +218,49 @@ class TestBackup:
         assert path.read_text(encoding="utf-8") == "<p>本文</p>"
         assert "nXXX" in path.name
         assert "20260512_120000" in path.name
+
+
+class TestStrippedHtmlToEditorText:
+    """URL 削除後の HTML → エディタ再投入用プレーンテキスト変換"""
+
+    def test_paragraphs_to_lines(self):
+        html = "<p>段落1</p><p>段落2</p>"
+        out = stripped_html_to_editor_text(html)
+        assert "段落1" in out
+        assert "段落2" in out
+        # 段落間に改行
+        assert out.count("\n") >= 1
+
+    def test_br_becomes_newline(self):
+        html = "<p>1行目<br>2行目</p>"
+        out = stripped_html_to_editor_text(html)
+        assert "1行目" in out and "2行目" in out
+
+    def test_tags_stripped(self):
+        html = "<p>本文<strong>強調</strong>続き</p>"
+        out = stripped_html_to_editor_text(html)
+        assert "<strong>" not in out
+        assert "本文強調続き" in out or ("本文" in out and "強調" in out)
+
+    def test_html_entities_unescaped(self):
+        html = "<p>A &amp; B</p>"
+        out = stripped_html_to_editor_text(html)
+        assert "A & B" in out
+        assert "&amp;" not in out
+
+    def test_consecutive_blanks_collapsed(self):
+        html = "<p>A</p><p></p><p></p><p></p><p>B</p>"
+        out = stripped_html_to_editor_text(html)
+        # 3 行以上の空行は 2 行に圧縮
+        assert "\n\n\n\n" not in out
+
+    def test_post_url_strip_pipeline(self):
+        """strip_all_urls_from_html → stripped_html_to_editor_text の連続パイプライン"""
+        html = '<p>こんにちは <a href="https://example.com/">こちら</a>から</p>'
+        stripped, _ = strip_all_urls_from_html(html)
+        text = stripped_html_to_editor_text(stripped)
+        assert "こんにちは" in text
+        assert "こちら" in text
+        assert "から" in text
+        assert "https" not in text, "URL が残っていない"
+        assert "<a" not in text and "href" not in text, "<a> タグが残っていない"

@@ -80,6 +80,91 @@ async def fetch_current_bio(updater: NoteProfileUpdater) -> tuple[str | None, st
         await context.close()
 
 
+def _backup_profile(bio: str, name: str | None, ts: str | None = None) -> Path:
+    """プロフィール bio を logs/profile_strip_backup_<ts>.html に保存。rollback 用。"""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = ts or datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = LOGS_DIR / f"profile_strip_backup_{ts}.html"
+    path.write_text(
+        f"<!-- profile backup {ts} -->\n"
+        f"<!-- display_name: {name or '(unknown)'} -->\n"
+        f"<bio>{bio}</bio>\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+async def execute_strip_profile(updater: NoteProfileUpdater) -> int:
+    """note プロフィール bio から URL を実削除して保存する。
+
+    手順:
+      1. 設定画面を開く
+      2. 現在の bio を取得
+      3. URL 削除版を strip_urls_from_plain_text で生成
+      4. backup を logs/ に保存
+      5. bio フィールドに削除版を fill
+      6. 保存ボタンをクリック
+      7. 失敗時は SystemExit (rollback はバックアップから手動で fill)
+    """
+    context = await updater._get_context()
+    page = await context.new_page()
+    try:
+        await page.goto(SETTINGS_URL, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(3000)
+        if "/login" in page.url:
+            print("  ✗ セッション無効。setup/profile_update.py で再ログイン後に再試行")
+            return 1
+
+        bio_input, bio_sel = await updater._find_bio_textarea(page)
+        if bio_input is None:
+            print("  ✗ 自己紹介フィールド未検出。setup/REBRAND_MANUAL.md 参照")
+            await updater._screenshot(page, "exec_bio_not_found")
+            return 1
+
+        # 現在 bio を取得 + バックアップ
+        current_bio = await bio_input.input_value()
+        if not current_bio:
+            print("  ✓ bio が空 → 削除対象なし")
+            return 0
+        cleaned, removed = strip_urls_from_plain_text(current_bio)
+        if not removed:
+            print("  ✓ bio に URL なし → 何もしない")
+            return 0
+
+        backup_path = _backup_profile(current_bio, None)
+        print(f"  ✓ backup saved: {backup_path}")
+        print(f"  削除対象 URL: {removed}")
+
+        # bio を上書き
+        await bio_input.click()
+        await bio_input.fill("")
+        await page.wait_for_timeout(300)
+        await bio_input.fill(cleaned)
+        await page.wait_for_timeout(500)
+        print(f"  ✓ bio 上書き ({bio_sel}): {len(removed)} URL 削除")
+
+        await updater._screenshot(page, "exec_before_save")
+
+        save_sel = await updater._click_save(page)
+        if save_sel is None:
+            print("  ✗ 保存ボタン未検出 — 即停止 (バックアップから手動 rollback 必要)")
+            await updater._screenshot(page, "exec_save_not_found")
+            raise SystemExit(1)
+        await page.wait_for_timeout(4000)
+        await updater._screenshot(page, "exec_after_save")
+        print(f"  ✓ 保存完了 (button: {save_sel})")
+        return 0
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"  ✗ 例外発生 — 即停止: {e}")
+        await updater._screenshot(page, "exec_error")
+        raise SystemExit(1)
+    finally:
+        await page.close()
+        await context.close()
+
+
 async def dry_run() -> int:
     print("→ note 設定画面からプロフィールを取得中 ...")
     updater = NoteProfileUpdater()
@@ -134,8 +219,21 @@ def main():
         rc = asyncio.run(dry_run())
         raise SystemExit(rc)
 
-    print("=== EXECUTE モードは Phase 2 用、凌佳承認後に実装 ===")
-    raise SystemExit(0)
+    # --execute (Phase 2 — 凌佳承認後にのみ起動すること)
+    print("=== EXECUTE MODE — note プロフィール bio から URL 削除 ===")
+    print("⚠ 不可逆操作: バックアップは logs/profile_strip_backup_*.html\n")
+    updater = NoteProfileUpdater()
+    asyncio.run(_run_execute(updater))
+
+
+async def _run_execute(updater: NoteProfileUpdater) -> None:
+    await updater.start()
+    try:
+        rc = await execute_strip_profile(updater)
+        if rc != 0:
+            raise SystemExit(rc)
+    finally:
+        await updater.stop()
 
 
 if __name__ == "__main__":

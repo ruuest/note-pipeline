@@ -39,6 +39,7 @@ from src.retrofit import (
     fetch_all_notes,
     fetch_note_detail,
     _html_to_text,
+    _html_to_lines,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -313,6 +314,18 @@ def analyze_article(meta: dict) -> ArticleStripResult:
     )
 
 
+def stripped_html_to_editor_text(stripped_html: str) -> str:
+    """URL 削除後の HTML を note エディタに再投入可能なプレーンテキストに変換。
+
+    retrofit._html_to_lines を流用 (連続空行圧縮・段落改行化済)。
+    URL は事前の strip_all_urls_from_html で消えているため、リンク化は不要。
+    """
+    lines = _html_to_lines(stripped_html)
+    joined = "\n".join(lines)
+    # 連続空行を更に圧縮 (削除痕で発生する3行以上の空白を2行に)
+    return re.sub(r"\n{3,}", "\n\n", joined).strip()
+
+
 def render_dry_run(result: ArticleStripResult) -> str:
     lines: list[str] = []
     lines.append(f"=== 記事: {result.title or '(無題)'} ({result.note_url}) ===")
@@ -332,6 +345,241 @@ def render_dry_run(result: ArticleStripResult) -> str:
         lines.append(f"  - {kind}: \"{sample.snippet}\" → {sample.url}{more}")
     lines.append(f"合計 {result.total_removed} URL 削除予定 (内訳: {summary})")
     return "\n".join(lines)
+
+
+# ---------- execute モード (Playwright で書き換え) ----------
+
+async def _execute_one_article(
+    page,
+    result: ArticleStripResult,
+    *,
+    screenshots_dir: Path | None = None,
+) -> dict:
+    """1 記事に対する Playwright 書き換え。retrofit.apply_fixes パターンを流用。
+
+    Returns:
+      detail dict (key, title, after_url_count, error?)
+    Raises:
+      RuntimeError on critical failures (caller が即停止すべきもの)
+    """
+    import platform
+
+    detail: dict = {"key": result.key, "title": result.title}
+    text_to_inject = stripped_html_to_editor_text(result.stripped_html)
+
+    edit_url = f"https://editor.note.com/notes/{result.key}/edit"
+    await page.goto(edit_url, wait_until="domcontentloaded", timeout=30000)
+    # editor リダイレクト待ち
+    for _ in range(30):
+        await page.wait_for_timeout(1000)
+        if "/edit" in page.url and "editor.note.com" in page.url:
+            break
+    await page.wait_for_timeout(4000)
+
+    body_area = page.locator('div[role="textbox"][contenteditable="true"]')
+    if await body_area.count() == 0:
+        raise RuntimeError("contenteditable body not found")
+    await body_area.click()
+    await page.wait_for_timeout(500)
+
+    if screenshots_dir is not None:
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(screenshots_dir / f"strip_{result.key}_before.png"))
+
+    mod = "Meta" if platform.system() == "Darwin" else "Control"
+    await page.keyboard.press(f"{mod}+a")
+    await page.wait_for_timeout(300)
+    await page.keyboard.press("Delete")
+    await page.wait_for_timeout(500)
+
+    await page.evaluate(
+        """(text) => {
+            const editor = document.querySelector('div[role="textbox"][contenteditable="true"]');
+            if (!editor) return;
+            editor.focus();
+            const lines = text.split('\\n');
+            lines.forEach((line, i) => {
+                if (line.trim() === '') {
+                    document.execCommand('insertParagraph', false);
+                } else {
+                    document.execCommand('insertText', false, line);
+                }
+                if (i < lines.length - 1) {
+                    document.execCommand('insertParagraph', false);
+                }
+            });
+        }""",
+        text_to_inject,
+    )
+    await page.wait_for_timeout(1500)
+
+    if screenshots_dir is not None:
+        await page.screenshot(path=str(screenshots_dir / f"strip_{result.key}_after_input.png"))
+
+    # 2-step save: 「公開に進む」/「更新する」 → ダイアログ → 「更新する」/「投稿する」
+    clicked_step1 = False
+    for sel in ['button:has-text("公開に進む")', 'button:has-text("更新する")']:
+        try:
+            btn = page.locator(sel).first
+            if await btn.count() > 0 and await btn.is_visible():
+                await btn.click()
+                clicked_step1 = True
+                detail["step1_selector"] = sel
+                break
+        except Exception:
+            continue
+    if not clicked_step1:
+        raise RuntimeError("step1 update button not found")
+
+    await page.wait_for_timeout(3500)
+    if screenshots_dir is not None:
+        await page.screenshot(path=str(screenshots_dir / f"strip_{result.key}_dialog.png"))
+
+    clicked_step2 = False
+    for sel in [
+        'button:has-text("更新する")',
+        'button:has-text("投稿する")',
+        'button:has-text("変更を公開")',
+    ]:
+        try:
+            loc = page.locator(sel)
+            count = await loc.count()
+            if count == 0:
+                continue
+            btn2 = loc.last if count > 1 else loc.first
+            if await btn2.is_visible():
+                await btn2.click()
+                clicked_step2 = True
+                detail["step2_selector"] = f"{sel}[{count}]"
+                await page.wait_for_timeout(6000)
+                break
+        except Exception:
+            continue
+    if not clicked_step2:
+        raise RuntimeError("step2 confirm button not found")
+
+    return detail
+
+
+async def execute_strip_articles(
+    notes: list[dict],
+    *,
+    state_path: Path = STATE_PATH,
+    ignore_rate_limit: bool = False,
+    sleep_between: int = MIN_INTERVAL_SECONDS,
+) -> dict:
+    """選択された記事に対して URL 削除を本実行する。
+
+    安全機構:
+      - レート制限チェック (count >= 3 / interval < 30 min) で次記事を中断
+      - 各記事の original_html を logs/ にバックアップしてから edit
+      - Playwright 失敗時は **即 SystemExit (例外 raise)**、次記事に進まない
+      - 成功時は state を update して record_run
+
+    Returns:
+      summary dict {processed, skipped_no_match, errors, details: [...]}
+    """
+    from src.publisher import NotePublisher, SCREENSHOTS_DIR
+
+    summary: dict = {
+        "processed": 0,
+        "skipped_no_match": 0,
+        "skipped_rate_limit": 0,
+        "errors": 0,
+        "details": [],
+    }
+
+    publisher = NotePublisher()
+    await publisher.start()
+    try:
+        context = await publisher._get_context()
+
+        for meta in notes:
+            try:
+                result = analyze_article(meta)
+            except Exception as e:
+                append_run_log(f"[execute] key={meta.get('key')} analyze failed: {e}")
+                summary["errors"] += 1
+                continue
+
+            if not result.matches:
+                summary["skipped_no_match"] += 1
+                append_run_log(f"[execute] key={result.key} skipped (no URLs)")
+                continue
+
+            # レート制限チェック (記事ごと)
+            state = load_state(state_path)
+            if not ignore_rate_limit:
+                ok, reason = can_proceed(state)
+                if not ok:
+                    append_run_log(f"[execute] key={result.key} rate-limit-stop: {reason}")
+                    summary["skipped_rate_limit"] += 1
+                    print(f"  ⏸ レート制限により停止: {reason}")
+                    break  # 1 日の上限到達 / 待機必要 → 中断
+
+            # バックアップ
+            backup_path = backup_html(result.key, result.original_html)
+            append_run_log(
+                f"[execute] key={result.key} title={result.title!r} "
+                f"backup={backup_path.name} planned_removal={result.summary()}"
+            )
+
+            # Playwright 書き換え
+            page = await context.new_page()
+            try:
+                detail = await _execute_one_article(
+                    page, result, screenshots_dir=SCREENSHOTS_DIR,
+                )
+                detail["backup"] = str(backup_path)
+                detail["removed"] = result.summary()
+
+                # 検証: 再 fetch で URL 残存ゼロを確認
+                time.sleep(3)
+                post = fetch_note_detail(result.key)
+                post_html = post.get("body", "") or ""
+                _, post_matches = strip_all_urls_from_html(post_html)
+                detail["after_url_count"] = len(post_matches)
+                if len(post_matches) > 0:
+                    msg = (f"verification failed: {len(post_matches)} URLs remain after edit "
+                           f"(key={result.key})")
+                    append_run_log(f"[execute] {msg}")
+                    print(f"  ⚠ {msg} — 即停止")
+                    summary["errors"] += 1
+                    summary["details"].append({**detail, "error": msg})
+                    raise SystemExit(1)
+
+                summary["processed"] += 1
+                summary["details"].append(detail)
+                # 成功 → state 更新
+                state = record_run(load_state(state_path))
+                save_state(state, state_path)
+                append_run_log(
+                    f"[execute] key={result.key} ✓ saved (after_url_count=0, "
+                    f"daily_count={state['count']}/{DAILY_LIMIT})"
+                )
+                print(f"  ✓ {result.title[:40]} 完了 ({state['count']}/{DAILY_LIMIT} 本)")
+
+                # 次記事まで待機 (1 件目以降のみ。日上限到達で次loopの can_proceed が止める)
+                if state["count"] < DAILY_LIMIT and not ignore_rate_limit:
+                    print(f"  → 次まで {sleep_between}s 待機 ...")
+                    time.sleep(sleep_between)
+
+            except SystemExit:
+                raise
+            except Exception as e:
+                msg = f"playwright error key={result.key}: {e}"
+                append_run_log(f"[execute] {msg}")
+                print(f"  ✗ {msg} — 即停止")
+                summary["errors"] += 1
+                summary["details"].append({"key": result.key, "error": str(e)})
+                raise SystemExit(1)
+            finally:
+                await page.close()
+
+        await context.close()
+    finally:
+        await publisher.stop()
+    return summary
 
 
 # ---------- CLI ----------
@@ -384,10 +632,32 @@ def _cli():
         print("=== 完了 (DRY RUN — note サーバーには書き込んでいません) ===")
         return
 
-    # --execute は Phase 2 (凌佳承認後)
-    print("\n=== EXECUTE モードは Phase 2 用、凌佳承認後に実装 ===")
-    print("Phase 1 では --dry-run のみ動作確認してください。")
-    raise SystemExit(0)
+    # --execute (Phase 2 — 凌佳承認後にのみ起動すること)
+    print("\n=== EXECUTE MODE — Playwright で本文書き換え ===")
+    print("⚠ 不可逆操作: 各記事の original_html はバックアップ済 (logs/strip_url_backup_*.html)")
+    print(f"レート制限: 30 分間隔 + 1 日 {DAILY_LIMIT} 本上限 (.strip_state.json)\n")
+
+    # 事前チェック: 当日カウント
+    state = load_state()
+    print(f"今日の処理済: {state.get('count', 0)} / {DAILY_LIMIT}")
+    ok_initial, reason = can_proceed(state)
+    if not ok_initial and not args.ignore_rate_limit:
+        print(f"⏸ レート制限: {reason}")
+        print("待機 or 翌日に再実行してください (--ignore-rate-limit でデバッグ起動可)")
+        raise SystemExit(2)
+
+    summary = asyncio.run(execute_strip_articles(
+        notes,
+        ignore_rate_limit=args.ignore_rate_limit,
+    ))
+    print()
+    print(f"=== 完了 ===")
+    print(f"  本実行: {summary['processed']} 件")
+    print(f"  URL 無しスキップ: {summary['skipped_no_match']} 件")
+    print(f"  レート制限スキップ: {summary['skipped_rate_limit']} 件")
+    print(f"  エラー: {summary['errors']} 件")
+    if summary["errors"] > 0:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
