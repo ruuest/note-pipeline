@@ -77,6 +77,20 @@ EMBED_BLOCKQUOTE_RE = re.compile(
 # 全削除した上で適用する想定。残った text-only ストリームで検出する。
 BARE_URL_RE = re.compile(r'https?://[^\s<>"\'）)、]+', re.IGNORECASE)
 
+# 固定ドメインリテラル (https:// 接頭辞なしのプレーン記載も削除)
+# 2026-05-14 minister_be diagnosis: n973f751dec7e に <p>nvcloud-lp.pages.dev</p>
+# のようなプレーンドメインが残っていた。NV CLOUD 自社運用専用化のため、
+# これらドメインがテキスト中に出てきたら全部削除する。
+# 順序: BARE_URL_RE (https?://) で先に検出 → このパターンで残り (プロトコルなし) を捕捉。
+# 重複カウントなし (前者で消えた URL はもう存在しない)。
+BARE_DOMAIN_PATTERNS = [
+    re.compile(r'nvcloud-lp\.pages\.dev[/\w\-?=&%.]*', re.IGNORECASE),
+    re.compile(r'app\.northvalue-assets\.net[/\w\-?=&%.]*', re.IGNORECASE),
+    # x.com/Rttv2026 / x.com/Rttvx2026 など SNS ハンドル
+    re.compile(r'x\.com/Rttvx?2026?[/\w\-?=&%.]*', re.IGNORECASE),
+    re.compile(r'lit\.link/[\w\-]+', re.IGNORECASE),
+]
+
 # 任意の embed 系要素 (note の external-article 等カスタムタグ含む) を削除
 EMBED_CUSTOM_RE = re.compile(
     r'<(?:external-article|embed-card|note-embed)\b[^>]*>(?:.*?</[^>]+>)?',
@@ -202,7 +216,13 @@ def _strip_bare_urls(html: str, matches: list[UrlMatch]) -> str:
 
     out = BARE_URL_RE.sub(repl, safe_html)
 
-    # 3. 退避した属性値 URL を復元 (タグ自体は他段で削除されるため属性のまま残してよい)
+    # 3. 固定ドメインリテラル (https:// 接頭辞なしのプレーン記載) を追加削除
+    # https?://nvcloud-lp.pages.dev 等は前段の BARE_URL_RE で既に消えているため、
+    # ここに到達するのはプロトコル無しの記載のみ → 重複カウントなし。
+    for pattern in BARE_DOMAIN_PATTERNS:
+        out = pattern.sub(repl, out)
+
+    # 4. 退避した属性値 URL を復元 (タグ自体は他段で削除されるため属性のまま残してよい)
     for i, original in enumerate(placeholders):
         out = out.replace(f"\x00ATTR_URL_{i}\x00", original)
 
