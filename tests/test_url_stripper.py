@@ -165,3 +165,48 @@ class TestBareUrlRe:
 
     def test_does_not_match_no_scheme(self):
         assert BARE_URL_RE.search("example.com/foo") is None
+
+
+# ---------- 固定ドメインリテラル (https:// 接頭辞なし) — 2026-05-14 同期追加 ----------
+# strip_all_urls.py (commit 9f60f8d) からの同期。共通モジュール側に同等パッチ反映。
+
+class TestBareDomainPatterns:
+    def test_bare_domain_nvcloud_lp_no_protocol_html(self):
+        # 残存パターン: <p>nvcloud-lp.pages.dev</p> (n973 で実際に残っていた)
+        from src.utils.url_stripper import strip_urls_from_html
+        html = '<p>詳細は nvcloud-lp.pages.dev を見てください</p>'
+        out, matches = strip_urls_from_html(html)
+        assert "nvcloud-lp.pages.dev" not in out
+        assert any(m.kind == "bare" and "nvcloud-lp.pages.dev" in m.url for m in matches)
+
+    def test_bare_domain_app_northvalue_no_protocol_html(self):
+        from src.utils.url_stripper import strip_urls_from_html
+        html = '<p>サインアップ: app.northvalue-assets.net/sign-up</p>'
+        out, matches = strip_urls_from_html(html)
+        assert "app.northvalue-assets.net" not in out
+        assert any(m.kind == "bare" and "app.northvalue-assets.net" in m.url for m in matches)
+
+    def test_bare_domain_x_com_handle_no_protocol_text(self):
+        from src.utils.url_stripper import strip_urls_from_text
+        text = 'SNS フォロー: x.com/Rttvx2026'
+        out, matches = strip_urls_from_text(text)
+        assert "x.com" not in out
+        assert any(m.kind == "bare" and "Rttvx2026" in m.url for m in matches)
+
+    def test_bare_domain_lit_link_no_protocol_text(self):
+        from src.utils.url_stripper import strip_urls_from_text
+        text = 'リンク集: lit.link/kaitori_nv_cloud'
+        out, matches = strip_urls_from_text(text)
+        assert "lit.link" not in out
+        assert any(m.kind == "bare" and "lit.link/kaitori_nv_cloud" in m.url for m in matches)
+
+    def test_no_double_count_https_then_literal(self):
+        # https:// プレフィクス付きは BARE_URL_RE で 1 回だけ検出、
+        # 後段の固定ドメインリテラルでは検出されない (既に消えているため)
+        from src.utils.url_stripper import strip_urls_from_html
+        html = '<p>こちら https://nvcloud-lp.pages.dev/foo</p>'
+        out, matches = strip_urls_from_html(html)
+        bare_matches = [m for m in matches if m.kind == "bare"]
+        assert len(bare_matches) == 1, "重複カウントなし — bare 1 件のみ"
+        assert "nvcloud-lp.pages.dev" in bare_matches[0].url
+        assert "nvcloud-lp" not in out

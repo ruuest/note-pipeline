@@ -48,6 +48,21 @@ EMBED_CUSTOM_RE = re.compile(
 # bare URL (テキスト中に裸で残った http(s)://…)
 BARE_URL_RE = re.compile(r'https?://[^\s<>"\'）)、]+', re.IGNORECASE)
 
+# 固定ドメインリテラル (https:// 接頭辞なしのプレーン記載も削除)
+# 2026-05-14 minister_be diagnosis: n973f751dec7e に <p>nvcloud-lp.pages.dev</p>
+# のようなプレーンドメインが残っていた。NV CLOUD 自社運用専用化のため、
+# これらドメインがテキスト中に出てきたら全部削除する。
+# strip_all_urls.py (commit 9f60f8d) からの同期 patch (PR #9 共通モジュール側)。
+# 順序: BARE_URL_RE (https?://) で先に検出 → このパターンで残り (プロトコルなし) を捕捉。
+# 重複カウントなし (前者で消えた URL はもう存在しない)。
+BARE_DOMAIN_PATTERNS = [
+    re.compile(r'nvcloud-lp\.pages\.dev[/\w\-?=&%.]*', re.IGNORECASE),
+    re.compile(r'app\.northvalue-assets\.net[/\w\-?=&%.]*', re.IGNORECASE),
+    # x.com/Rttv2026 / x.com/Rttvx2026 など SNS ハンドル
+    re.compile(r'x\.com/Rttvx?2026?[/\w\-?=&%.]*', re.IGNORECASE),
+    re.compile(r'lit\.link/[\w\-]+', re.IGNORECASE),
+]
+
 
 @dataclass
 class UrlMatch:
@@ -128,6 +143,13 @@ def _strip_bare_urls_in_html(html: str, matches: list[UrlMatch]) -> str:
         return ""
 
     out = BARE_URL_RE.sub(repl, safe_html)
+
+    # 固定ドメインリテラル (https:// 接頭辞なしのプレーン記載) を追加削除
+    # https?://nvcloud-lp.pages.dev 等は前段の BARE_URL_RE で既に消えているため、
+    # ここに到達するのはプロトコル無しの記載のみ → 重複カウントなし。
+    for pattern in BARE_DOMAIN_PATTERNS:
+        out = pattern.sub(repl, out)
+
     for i, original in enumerate(placeholders):
         out = out.replace(f"\x00ATTR_URL_{i}\x00", original)
 
@@ -181,6 +203,9 @@ def strip_urls_from_text(text: str) -> tuple[str, list[UrlMatch]]:
             ))
             return ""
         new_line = BARE_URL_RE.sub(repl, line)
+        # 固定ドメインリテラル (プロトコル無し) も削除 — 同 repl で kind="bare" 記録
+        for pattern in BARE_DOMAIN_PATTERNS:
+            new_line = pattern.sub(repl, new_line)
         # 行内空白整理
         new_line = re.sub(r"[ \t]+", " ", new_line).strip()
         lines_out.append(new_line)
