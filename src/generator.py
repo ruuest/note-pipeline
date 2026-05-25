@@ -20,6 +20,7 @@ from src.models import Article
 from src import title_optimizer
 from src.api_retry import call_with_retry
 from src.thumbnail import generate_thumbnail
+from src.utils.url_stripper import strip_urls_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,12 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
     tags_config = load_tags_config()
     hashtags = build_hashtags(keyword, tags_config)
     body = body + format_hashtag_block(hashtags)
+
+    # URL 撤去 (Phase 4: NV CLOUD 自社運用専用化に伴う、全 URL の自動削除)
+    # 関連記事ブロック / CTA / LLM 出力に紛れた URL を一括除去する。
+    # publisher.py 側でも投稿直前に再 strip するが、ここで早期に消すことで保存される
+    # draft JSON にも URL が残らない。
+    body, _stripped = strip_urls_from_text(body)
 
     # サムネイル生成（失敗しても記事生成は続行）
     image_path = None
