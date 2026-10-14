@@ -27,8 +27,8 @@ Playwright で x.com にログインセッションを復元して順次投稿�
 - 出力スキーマ: [{index, text, has_link, char_count}]  JSONのみ
 - バリデーション: config/compliance_rules.yaml の CR001-CR050 を全件スキャン
 - 再生成: 違反検出時は最大3回まで再生成、それでもNGなら承認キューへ
-- 制約: 各 text 135字以内 / 3〜7本 / 絵文字1ツイート2個以内 / CTA末尾1箇所のみ
-- LP URL: https://nvcloud-lp.pages.dev/ のみ使用
+- 制約: 各 text 135字以内 / 3〜7本 / 絵文字1ツイート2個以内 / URL・リンクなし
+- 2026-10-15: NV CLOUD LP の停止 (2026-10-10) に合わせ、末尾の LP への CTA を外した。URL を含むスレッドは検証で落とす
 """
 from __future__ import annotations
 
@@ -113,8 +113,6 @@ TWEET_SAFE_LIMIT = 135
 THREAD_MIN = 3
 THREAD_MAX = 7
 EMOJI_PER_TWEET_MAX = 2
-DEFAULT_CTA_URL = "https://nvcloud-lp.pages.dev/"
-ALLOWED_URL = "https://nvcloud-lp.pages.dev/"
 
 X_PROFILE_URL = "https://x.com/home"
 X_COMPOSE_URL = "https://x.com/compose/post"
@@ -124,14 +122,6 @@ MAX_REGEN = 3
 
 # レート制限相当（連続投稿検知）— UI 側の "制限" ダイアログ検知で使用
 RATE_LIMIT_WAIT_SEC = 30 * 60  # 30分 sleep でリトライ
-
-# CTA バリエーション
-CTA_VARIANTS = {
-    "free_trial": f"機能詳細+無料体験はこちら → {ALLOWED_URL}",
-    "doc_dl": f"資料ダウンロードはLPから → {ALLOWED_URL}",
-    "inquiry": f"導入相談はLPのお問い合わせフォームから → {ALLOWED_URL}",
-}
-
 
 class XSessionError(RuntimeError):
     """X セッション関連の致命的エラー（再ログイン必須）。"""
@@ -386,20 +376,14 @@ def validate_thread(thread: list[dict]) -> ValidationResult:
         for m in w:
             warnings.append(f"index={idx}: {m}")
 
-    cta_indices = [i for i, t in enumerate(thread) if t.get("has_link")]
-    if len(cta_indices) != 1:
-        errors.append(f"CTAは末尾1箇所のみ。検出: {len(cta_indices)}箇所")
-    elif cta_indices[0] != len(thread) - 1:
-        errors.append(f"CTAが末尾でない（index={cta_indices[0]+1}）")
-
+    # LP 停止 (2026-10-10) 後は CTA・URL を入れない。リンク付きのツイートと URL は全部エラー
     for i, t in enumerate(thread):
+        if t.get("has_link"):
+            errors.append(f"index={i+1}: リンク付き (has_link=true) は不可。LP 停止中のため CTA は入れない")
         urls = re.findall(r"https?://\S+", str(t.get("text", "")))
         for u in urls:
             normalized = u.rstrip("。、．，)）」]」")
-            if normalized != ALLOWED_URL:
-                errors.append(
-                    f"index={i+1}: 許可URL以外を含む（{normalized}）。許可: {ALLOWED_URL}"
-                )
+            errors.append(f"index={i+1}: URL を含む（{normalized}）。LP 停止中のため URL は入れない")
 
     return ValidationResult(ok=len(errors) == 0, errors=errors, warnings=warnings)
 
@@ -411,7 +395,6 @@ def _build_user_prompt(input_data: dict) -> str:
     snippets = input_data.get("source_snippets") or []
     snippets_block = "\n".join(f"- {s}" for s in snippets) if snippets else "（なし）"
     hashtags = input_data.get("hashtags") or ["#買取業界", "#出張買取"]
-    cta_variant = input_data.get("cta_variant", "free_trial")
     return (
         f"topic: {input_data.get('topic','')}\n"
         f"axis: {input_data.get('axis','A')}\n"
@@ -419,7 +402,6 @@ def _build_user_prompt(input_data: dict) -> str:
         f"source_article_url: {input_data.get('source_article_url') or 'なし'}\n"
         f"source_snippets:\n{snippets_block}\n"
         f"hashtags: {' '.join(hashtags)}\n"
-        f"cta_variant: {cta_variant}\n"
     )
 
 

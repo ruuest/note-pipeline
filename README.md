@@ -20,7 +20,6 @@ note / X (Twitter) 向け記事生成・投稿自動化パイプライン。
 |---|---|
 | `NOTE_EMAIL` / `NOTE_PASSWORD` | note ログイン資格情報 |
 | `ANTHROPIC_API_KEY` | Claude API（本文生成） |
-| `LP_URL` | 記事末尾に挿入する LP URL (デフォルト: `https://nvcloud-lp.pages.dev/`) |
 | `X_BEARER_TOKEN` | X API v2 App-only Bearer Token（読み取り系用） |
 | `X_API_KEY` / `X_API_SECRET` | OAuth 1.0a Consumer Key/Secret |
 | `X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET` | OAuth 1.0a User Access Token/Secret |
@@ -138,8 +137,8 @@ note 投稿成功後、Claude Sonnet 4.6 で 3〜7 ツイートのスレッド�
 - システムプロンプト: `docs/x_thread_prompt.md`（プロダクト大臣作成）
 - トーンガイド: `docs/x_tone_guide.md`
 - コンプラルール: `config/compliance_rules.yaml`（CR001-050、景表法/古物営業法/ステマ/X TOS/Meta TOS）
-- LP URL: `https://nvcloud-lp.pages.dev/`（他URL使用禁止）
-- 制約: 各ツイート135字以内、絵文字1ツイート2個まで、CTAは末尾1箇所のみ
+- URL・CTA: 入れない (NV CLOUD LP は 2026-10-10 から停止。2026-10-15 に記事・X の CTA を外した)
+- 制約: 各ツイート135字以内、絵文字1ツイート2個まで、URL なし
 - 再生成: バリデーションNG時は最大3回再生成 → 全NGなら `queue/x_approval_queue.json` に積む
 
 ### 所要時間（モンテカルロ 1000 試行）

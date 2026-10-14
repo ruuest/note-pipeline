@@ -45,16 +45,6 @@ def count_hashtags(body: str) -> int:
     return len(re.findall(r"(?:^|\s)#[^\s#]+", body))
 
 
-def cta_url_is_embeddable(body: str, url: str = "https://nvcloud-lp.pages.dev/") -> bool:
-    """note のリンクカード生成条件: URLが単独行・前後空行。"""
-    if url not in body:
-        return False
-    # URL が独立した行にあることを確認
-    pattern = re.compile(r"(^|\n)\s*" + re.escape(url) + r"\s*(\n|$)")
-    if not pattern.search(body):
-        return False
-    return True
-
 
 def has_image_marker(body: str) -> bool:
     if re.search(r"!\[[^\]]*\]\([^)]+\)", body):
@@ -103,11 +93,6 @@ def validate_article(article: Article) -> ValidationResult:
     has_thumbnail = bool(getattr(article, "image_path", None))
     if not has_thumbnail and not has_image_marker(body):
         result.warnings.append("見出し画像も本文画像も未設定です")
-
-    if not cta_url_is_embeddable(body):
-        result.errors.append(
-            "CTA URLがリンクカード化されない形式です（URLは単独行・絵文字/記号プレフィックスなしにする）"
-        )
 
     if re.search(r"^\s*#{1,6}\s+\S", body, flags=re.MULTILINE):
         result.errors.append(

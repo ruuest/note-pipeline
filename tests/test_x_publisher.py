@@ -18,7 +18,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.x_publisher import (
-    ALLOWED_URL,
     EMOJI_PER_TWEET_MAX,
     THREAD_MAX,
     THREAD_MIN,
@@ -42,27 +41,20 @@ from src.models import Article
 
 # ─── helpers ─────────────────────────────────────────
 def _ok_thread(n: int = 5) -> list[dict]:
-    """検証通過する標準スレッド（n本、最後にCTA）。
+    """検証通過する標準スレッド（n本、リンクなし。LP 停止 2026-10-10 で CTA は外した）。
 
     NV CLOUDのSaaS製品紹介を想定した無害な本文。CR016（古物商許可番号必須）に
     抵触しないよう、買取/査定への直接的言及は避ける。
     """
-    base = [
+    return [
         {
             "index": i + 1,
             "text": f"本文{i+1}: 業務管理SaaSの導入で現場の工数を平均30%削減した事例があります。",
             "has_link": False,
             "char_count": 35,
         }
-        for i in range(n - 1)
+        for i in range(n)
     ]
-    cta = {
-        "index": n,
-        "text": f"機能詳細はLPから → {ALLOWED_URL} #SaaS #古物商",
-        "has_link": True,
-        "char_count": 25,
-    }
-    return base + [cta]
 
 
 # ─── system prompt / compliance rules ────────────────
@@ -96,7 +88,7 @@ def test_count_emoji_basic():
 def test_parse_thread_json_plain_array():
     raw = json.dumps([
         {"index": 1, "text": "あ", "has_link": False, "char_count": 1},
-        {"index": 2, "text": f"い → {ALLOWED_URL}", "has_link": True, "char_count": 1},
+        {"index": 2, "text": "い → https://example.com/", "has_link": True, "char_count": 1},
     ])
     parsed = _parse_thread_json(raw)
     assert len(parsed) == 2
@@ -147,16 +139,6 @@ def test_validate_over_safe_limit():
     assert any("上限" in e for e in res.errors)
 
 
-def test_validate_url_preserves_count():
-    """URL を含む本文は、URL を除いた文字数で判定される。"""
-    text_with_url = "あ" * 130 + f" → {ALLOWED_URL}"
-    thread = _ok_thread()
-    thread[-1]["text"] = text_with_url  # 末尾CTAを置換
-    res = validate_thread(thread)
-    # 130字 < 135字制限なので OK
-    assert res.ok is True, f"errors: {res.errors}"
-
-
 # ─── validate_thread: 絵文字超過 ──────────────────
 def test_validate_too_many_emojis():
     thread = _ok_thread()
@@ -166,41 +148,33 @@ def test_validate_too_many_emojis():
     assert any("絵文字" in e for e in res.errors)
 
 
-# ─── validate_thread: CTA配置 ────────────────────
-def test_validate_no_cta_fails():
+# ─── validate_thread: CTA・URL (LP 停止 2026-10-10 で外した) ────────────────────
+def test_validate_link_fails():
     thread = _ok_thread()
-    thread[-1]["has_link"] = False
+    thread[-1]["has_link"] = True
     res = validate_thread(thread)
     assert res.ok is False
-    assert any("CTA" in e for e in res.errors)
+    assert any("has_link" in e for e in res.errors)
 
 
-def test_validate_double_cta_fails():
+def test_validate_old_lp_url_fails():
     thread = _ok_thread()
-    thread[0]["has_link"] = True
-    thread[0]["text"] = f"前半にCTA → {ALLOWED_URL}"
+    thread[-1]["text"] = "機能詳細はこちら → https://nvcloud-lp.pages.dev/"
     res = validate_thread(thread)
     assert res.ok is False
-    assert any("CTA" in e for e in res.errors)
+    assert any("URL を含む" in e for e in res.errors)
 
 
-def test_validate_cta_not_at_end_fails():
-    thread = _ok_thread(n=5)
-    # 末尾の has_link を False にして、3本目を CTA にする
-    thread[-1]["has_link"] = False
-    thread[-1]["text"] = thread[-1]["text"].replace(ALLOWED_URL, "")
-    thread[2]["has_link"] = True
-    thread[2]["text"] = f"中盤CTA → {ALLOWED_URL}"
-    res = validate_thread(thread)
-    assert res.ok is False
-
-
-def test_validate_disallowed_url():
+def test_validate_any_url_fails():
     thread = _ok_thread()
-    thread[-1]["text"] = "他URL → https://example.com/"
+    thread[0]["text"] = "他URL → https://example.com/"
     res = validate_thread(thread)
     assert res.ok is False
-    assert any("許可URL以外" in e for e in res.errors)
+    assert any("URL を含む" in e for e in res.errors)
+
+
+def test_system_prompt_has_no_lp_url():
+    assert "nvcloud-lp" not in load_system_prompt()
 
 
 # ─── validate_thread: コンプラ規則 ────────────────

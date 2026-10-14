@@ -345,10 +345,10 @@ async def apply_fixes(
       1. 対象の本文HTMLを v3 API から取得
       2. clean_article_body() でクリーン化
       3. /notes/<key>/edit を Playwright で開き、contenteditable を全選択→削除→再投入
-      4. LP URL を createLink でアンカー化
-      5. 「更新する」ボタンクリック
-      6. 再度 v3 API から取得し scan_article() で問題件数 0 を検証
-      7. 検証失敗時は詳細ログで abort（ロールバックは手動）
+      4. 「更新する」ボタンクリック
+      5. 再度 v3 API から取得し scan_article() で問題件数 0 を検証
+      6. 検証失敗時は詳細ログで abort（ロールバックは手動）
+    (2026-10-15: LP URL を createLink でアンカー化する段は、NV CLOUD LP の停止に合わせて外した)
     """
     from src.publisher import NotePublisher, SCREENSHOTS_DIR
     from src.generator import CONFIG_DIR as _CFG
@@ -446,35 +446,6 @@ async def apply_fixes(
                     cleaned,
                 )
                 await page.wait_for_timeout(1500)
-
-                # LP URL を createLink でアンカー化（publisher.py 流用）
-                target_url = "https://nvcloud-lp.pages.dev/"
-                try:
-                    await page.evaluate(
-                        """(url) => {
-                            const editor = document.querySelector('div[role="textbox"][contenteditable="true"]');
-                            if (!editor) return;
-                            const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-                            let node;
-                            while ((node = walker.nextNode())) {
-                                const idx = node.textContent.indexOf(url);
-                                if (idx === -1) continue;
-                                const range = document.createRange();
-                                range.setStart(node, idx);
-                                range.setEnd(node, idx + url.length);
-                                const sel = window.getSelection();
-                                sel.removeAllRanges();
-                                sel.addRange(range);
-                                document.execCommand('createLink', false, url);
-                                sel.removeAllRanges();
-                                break;
-                            }
-                        }""",
-                        target_url,
-                    )
-                    await page.wait_for_timeout(1000)
-                except Exception:
-                    pass
 
                 await page.screenshot(
                     path=str(SCREENSHOTS_DIR / f"retrofit_{issue.key}_after_input.png")
