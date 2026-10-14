@@ -381,37 +381,6 @@ class NotePublisher:
 
             await page.wait_for_timeout(1500)
 
-            # 本文中のCTA URLを <a> リンクに昇格させる（noteのリンクカード生成のヒント）。
-            # JS走査で URL を含むテキストノードを見つけ、selection→execCommand('createLink')で
-            # アンカー化する。失敗してもプレーンテキストで残るので安全。
-            target_url = "https://nvcloud-lp.pages.dev/"
-            try:
-                await page.evaluate(
-                    """(url) => {
-                        const editor = document.querySelector('div[role="textbox"][contenteditable="true"]');
-                        if (!editor) return;
-                        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-                        let node;
-                        while ((node = walker.nextNode())) {
-                            const idx = node.textContent.indexOf(url);
-                            if (idx === -1) continue;
-                            const range = document.createRange();
-                            range.setStart(node, idx);
-                            range.setEnd(node, idx + url.length);
-                            const sel = window.getSelection();
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                            document.execCommand('createLink', false, url);
-                            sel.removeAllRanges();
-                            break;
-                        }
-                    }""",
-                    target_url,
-                )
-                await page.wait_for_timeout(1500)
-            except Exception:
-                pass
-
             # スクリーンショット（デバッグ用）
             SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

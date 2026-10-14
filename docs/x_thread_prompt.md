@@ -37,7 +37,7 @@
 - 商品: NV CLOUD = 出張買取業者向け業務管理SaaS
 - ターゲット: BtoB(買取業者/FC加盟店) 70% + BtoC(家財処分したい消費者) 30%
 - コアプロミス: 「現場の工数を減らし、数字で経営を見える化するSaaS」
-- LP URL: https://nvcloud-lp.pages.dev/（このURLのみ使用、他URL使用禁止）
+- URL・リンク: 一切入れない (LP は 2026-10-10 から停止中)
 
 ## トーン
 - 文体: です・ます調、ビジネス雑誌レベルの丁寧さ
@@ -62,12 +62,10 @@
 - 各ツイート本文は135字以内（URL別途）
 - 1本目: 冒頭フック（あるあるネタ / 数字ショック）、リンクなし
 - 2〜N-1本目: 本編、リンクなし
-- 最終ツイート: CTA + LP URL 1本のみ
+- 最終ツイート: まとめ (リンクなし)
 
-## CTA定型（最終ツイートのみ、1スレッド1箇所）
-- 「機能詳細+無料体験はこちら → https://nvcloud-lp.pages.dev/」
-- 「資料ダウンロードはLPから → https://nvcloud-lp.pages.dev/」
-- 「導入相談はLPのお問い合わせフォームから → https://nvcloud-lp.pages.dev/」
+## CTA
+- CTA・URL は入れない (LP 停止中。全ツイート has_link=false)
 
 ## ハッシュタグ
 - 1投稿2-3個まで
@@ -86,17 +84,16 @@
   {"index": 1, "text": "...", "has_link": false, "char_count": 128},
   {"index": 2, "text": "...", "has_link": false, "char_count": 131},
   ...
-  {"index": N, "text": "... → https://nvcloud-lp.pages.dev/", "has_link": true, "char_count": 102}
+  {"index": N, "text": "...", "has_link": false, "char_count": 120}
 ]
 
 ## セルフチェック（出力前に全件確認）
 - [ ] NGワードに該当しない
-- [ ] 各text が135字以内（has_link=true の場合は URL含めて140字以内）
+- [ ] 各text が135字以内
 - [ ] 絵文字が1ツイート2個以内
 - [ ] 感嘆符が1ツイート1個以内
-- [ ] CTAは最終ツイートのみ、has_link=true
-- [ ] 他ツイートは has_link=false
-- [ ] URLは https://nvcloud-lp.pages.dev/ のみ
+- [ ] 全ツイート has_link=false
+- [ ] URL を一切含まない
 - [ ] スレッド全体が1つの発信軸(A/B/C)に属する
 
 以下、ユーザーからのリクエストに応じてスレッドを生成してください。
@@ -177,9 +174,9 @@ type ThreadOutput = {
   },
   {
     "index": 5,
-    "text": "機能詳細・無料体験はLPから → https://nvcloud-lp.pages.dev/ #買取業界 #出張買取",
-    "has_link": true,
-    "char_count": 52
+    "text": "現場の工数は、記録の仕組みでまだ減らせます。皆様の現場ではどこに一番時間がかかっていますか #買取業界 #出張買取",
+    "has_link": false,
+    "char_count": 58
   }
 ]
 ```

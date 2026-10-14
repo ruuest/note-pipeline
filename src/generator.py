@@ -322,14 +322,15 @@ def generate_article(keyword: dict, templates_data: dict) -> Article:
     body = body + build_related_links_block(keyword.get("main_keyword", ""))
 
     # CTA付与（テーマ別cta_mapから選択。cta_blockフォールバックあり）
+    # 2026-10-15: NV CLOUD LP の停止 (2026-10-10) に合わせ、LP への誘導は外した。コメントの呼びかけだけ残す
     cta_map = templates_data.get("cta_map", {})
     if cta_map:
         category = keyword.get("category", "")
         cta_template = cta_map.get(category) or cta_map.get("default", "")
-        cta = cta_template.format(lp_url=templates_data["lp_url"])
+        cta = cta_template.format(lp_url=templates_data.get("lp_url", ""))
     else:
         # 旧cta_blockへのフォールバック
-        cta = templates_data.get("cta_block", "").format(lp_url=templates_data["lp_url"])
+        cta = templates_data.get("cta_block", "").format(lp_url=templates_data.get("lp_url", ""))
     body = body + cta
     # フォロー誘導 (cta 末尾に共通付与)
     cta_suffix = templates_data.get("cta_suffix", "")
